@@ -23,3 +23,22 @@ Two components:
 - parser: gives you useful data from trace
 
 The tracer currently works pretty well, but the parser is still rudimentary.
+
+Compilation instructions:
+- run 'make'
+
+How to use:
+1) Run your target program with pthread_trace.so preloaded, as so:
+	LD_PRELOAD=$(realpath /path/to/pthread_trace.so) ./my_program --my-args
+
+2) The tracer will generate a dump file named lktracedat-<PID> for every process descended from
+the original (incl. the original) that completes normally (i.e. no crashes or external termination). Support for tracing crashed programs is planned in future.
+
+3) Use the lkdump program to examine the results. Currently supports the following commands,
+combined with a single dump file as an argument (to the entire program):
+	- thread dump (per-thread histories, --threads)
+	- object dump (per-sync-object histories, --objects)
+	- lock patterns (patterns of lock usage, --patterns)
+Multiple of these can be selected on one run of the program. You can also redirect the output
+to a file rather than stdout with the -o flag.
+
