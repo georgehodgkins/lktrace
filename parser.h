@@ -2,6 +2,7 @@
 #include <vector>
 #include <unordered_map>
 #include <string>
+#include <sstream>
 
 #include <cassert>
 
@@ -16,6 +17,7 @@ struct log_entry {
 	size_t addr; // address of sync object (per-thrd log) or tid (per-obj log)
 	std::string caller; // string name of caller
 	size_t offset; // offset from caller addr
+	size_t call_addr; // caller addr
 };
 
 class parser {
@@ -31,12 +33,15 @@ class parser {
 
 	// symbol names of thread hooks (or filenames if symbol name was not found)
 	// key=tid
-	std::unordered_map<size_t, std::string> thrd_hooks; 
+	std::unordered_map<size_t, std::string> thrd_hooks;
 
+	// symbol names+offset of caller addresses
+	std::unordered_map<size_t, std::string> caller_names;
+	
 	// locking pattern results per-thread
-	// key=tid
-	std::unordered_map<size_t, std::vector<std::pair<std::string, unsigned int> > >
-		lk_patterns;
+	// key=tid -> key = pattern signature -> caller list + count
+	std::unordered_map<size_t, std::unordered_multimap<
+		std::u16string, std::pair<std::vector<size_t>, size_t> > > lk_patterns;
 
 	// tid of master
 	//const size_t master_tid;

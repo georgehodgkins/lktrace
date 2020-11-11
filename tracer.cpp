@@ -155,8 +155,9 @@ tracer::~tracer () { // purpose of this destructor is to write out our results
 //			} else { // name is not in expected format, just write it out
 //				outfile << mangled_name;
 //			}
-			// write offset from function entry
-			outfile << name << "+0x" << offset << '\n';
+			// write offset from function entry and full caller address
+			outfile << name << "+0x" << offset << ":0x" <<
+			       (size_t) entry.caller << '\n';
 
 		}
 		outfile << '\n';
