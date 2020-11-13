@@ -18,118 +18,103 @@ parser::parser(std::string fname) :
 	std::ifstream trace (fname);
 	assert(trace.is_open());
 
-	while(!trace.eof()) {
-		char tdes = trace.get();
-		if (tdes < 0) break; // TODO: find out why EOF isn't working
-		CHECKED_CONSUME(trace, ':');
-		size_t tid = 0;
-		trace >> std::hex >> tid;
-		assert (tid != 0);
-		CHECKED_CONSUME(trace, ':');
-		std::string hook_name;
-		getline(trace, hook_name, ':');
-		assert(!hook_name.empty());
-		thrd_hooks.emplace(std::make_pair(tid, hook_name));
-		CHECKED_CONSUME(trace, '\n');
-
-		// add new thread history
-		auto emplit = thrd_hist.emplace(NEW_LOG(tid));
-		assert(emplit.second == true);
-		auto thrd_l_it = emplit.first;
-		
-		while (trace.peek() != '\n') { // thread hists delimited by double newline
-			log_entry L; // per-thread log entry
-			// get timestamp
-			trace >> std::dec >> L.ts;
-			assert(L.ts != 0);
+	while(trace.peek() != -1) {
+		// TODO: handle errors w/ exceptions
+		CHECKED_CONSUME(trace, '[');
+		std::string bdes;
+		getline(trace, bdes, ':');
+		if (bdes[0] == 't' || bdes[0] == 'm') { // a thread block
+			size_t tid;
+			trace >> std::hex >> tid;
 			CHECKED_CONSUME(trace, ':');
-			// get event
-			std::string es;
-			getline(trace, es, ':'); // consumes colon
-			assert(es.size() == 2);
-			L.ev = ev_str_to_code(es);
-			// get obj addr
-			trace >> std::hex >> L.addr;
-			//assert(L.addr != 0);
-			CHECKED_CONSUME(trace, ':');
-			// get caller string
-			getline(trace, L.caller, '+'); // consumes plus
-			assert(!L.caller.empty());
-			// get offset
-			trace >> L.offset;
-			assert(L.offset != 0);
-			CHECKED_CONSUME(trace, ':');
-			// get full caller addr
-			trace >> L.call_addr;
-			assert(L.call_addr != 0);
-
-			// add caller name to reference map
-			std::stringstream name;
-			name << L.caller << '+' << std::hex << L.offset;
-			caller_names.insert(
-				std::make_pair(L.call_addr, name.str()));
-			name.str("");
-
-			// add per-obj log entry
-			log_entry L2 = L;
-			size_t obj_addr = L2.addr;
-			L2.addr = tid;
-			if (es[0] == 'L') {
-				auto it = lk_hist.find(obj_addr);
-				if (it == lk_hist.end()) { // first use of this object
-					auto emplit = lk_hist.emplace(NEW_LOG(obj_addr));
-					it = emplit.first;
-				}
-				it->second.push_back(std::move(L2));
-			} else if (es[0] == 'C') {
-				auto it = cond_hist.find(obj_addr);
-				if (it == cond_hist.end()) {
-					auto emplit = cond_hist.emplace(NEW_LOG(obj_addr));
-					it = emplit.first;
-				}
-				it->second.push_back(std::move(L2));
-			}
-
-			// add per-thread log entry
-			thrd_l_it->second.push_back(std::move(L));
-			// delimiting newline
+			//if (bdes[1] == 'm') master_tid = tid;
+			size_t hook;
+			trace >> std::hex >> hook;
+			CHECKED_CONSUME(trace, ']');
 			CHECKED_CONSUME(trace, '\n');
-		}
+			// add new thread history
+			auto emplit = thrd_hist.emplace(NEW_LOG(tid));
+			assert(emplit.second == true);
+			auto thrd_l_it = emplit.first;
+			// get event entries
+			while (trace.peek() != '\n') {// double newline ends a sxn
+				log_entry L;
+				trace >> std::dec >> L.ts;
+				CHECKED_CONSUME(trace, ':');
+				std::string es;
+				getline(trace, es, ':');
+				L.ev = ev_str_to_code(es); 
+				trace >> std::hex >> L.obj;
+				CHECKED_CONSUME(trace, ':');
+				trace >> L.caller;
+				CHECKED_CONSUME(trace, '\n');
 
+				// add per-thread log entry
+				thrd_l_it->second.push_back(std::move(L));
+
+				// add per-obj log entry
+				log_entry L2 = L;
+				size_t obj_addr = L2.obj;
+				L2.obj = tid;
+				if (es[0] == 'L') {
+					auto it = lk_hist.find(obj_addr);
+					if (it == lk_hist.end()) { // first use of this object
+						auto emplit = lk_hist.emplace(NEW_LOG(obj_addr));
+						it = emplit.first;
+					}
+					it->second.push_back(std::move(L2));
+				} else if (es[0] == 'C') {
+					auto it = cond_hist.find(obj_addr);
+					if (it == cond_hist.end()) {
+						auto emplit = cond_hist.emplace(NEW_LOG(obj_addr));
+						it = emplit.first;
+					}
+					it->second.push_back(std::move(L2));
+				}
+				// add xref
+				caller_xref.insert(std::make_pair(L.caller, L.obj));
+			}
+		} else if (bdes[0] == 'n') {
+			// TODO: fix
+			trace.ignore(8, '\n');
+			while (trace.peek() != '\n') {
+				std::pair<size_t, std::string> tab;
+				trace >> std::hex >> tab.first;
+				CHECKED_CONSUME(trace, ':');
+				getline(trace, tab.second);
+				caller_names.insert(std::move(tab));
+			}
+		}
 		CHECKED_CONSUME(trace, '\n');
 	}
+	trace.close();
+	// cross-reference thread hooks
+	for (auto hist_v : thrd_hist) {
+		auto it = caller_names.find(hist_v.second.front().obj);
+		assert(it != caller_names.end());
+		// map tid to hook
+		thrd_hooks.insert(std::make_pair(hist_v.first, it->second));
+	}
 }
-
+	
 // find all unique critical section patterns
 void parser::find_patterns () {
 	for (auto h : thrd_hist) {
 		size_t tid = h.first;
 		std::vector<log_entry>& hist = h.second;
 		// we represent patterns as strings of chars cast from event codes
-		// and count numbers of occurrences with this hash map
+		// and then differentiate between patterns based on lock object addrs
 		std::unordered_multimap<std::u16string,
 			std::pair<std::vector<size_t>, size_t> > pat_map;
 		std::vector<size_t> caller_list;
 
 		std::u16string pat; // pattern of events
-		std::u16string id_pat; // pattern of lock ids
 		int lk_count = 0; // number of currently held locks
-		char16_t nxt_id = 0; // identifiers for each new lock encountered
-		std::unordered_map<size_t, char16_t> lk_id; // lock identifiers
 		for (log_entry& e : hist) {
 			if (e.ev == event::LOCK_ACQ || e.ev == event::LOCK_REL) {
-				// identify the lock 
-				auto it = lk_id.find(e.addr);
-				if (it == lk_id.end()) { // new lock encountered
-					lk_id.insert(std::make_pair(e.addr, nxt_id));
-					id_pat += nxt_id;
-					++nxt_id;
-				} else {
-					id_pat += it->second;
-				}
 
 				// add this caller to caller list
-				caller_list.push_back(e.call_addr);
+				caller_list.push_back(e.caller);
 
 				switch (e.ev) {
 				case (event::LOCK_ACQ):
@@ -141,7 +126,6 @@ void parser::find_patterns () {
 					--lk_count;
 					pat += (char16_t) e.ev;	
 					if (lk_count == 0) { // quiescent point
-						pat += id_pat;
 						// record pattern + caller set
 						auto range = pat_map.equal_range(pat);
 						while (range.first != range.second) {
@@ -157,9 +141,8 @@ void parser::find_patterns () {
 							pat_map.insert(std::make_pair(
 								pat, std::make_pair(
 								std::move(caller_list), 1)));
-						id_pat.clear();
+						// reset pattern
 						pat.clear();
-						nxt_id = 0;
 					}
 					break;
 				default:
@@ -184,12 +167,11 @@ void parser::dump_patterns (std::ostream& outs) {
 		for (auto pat: pat_map) {
 			const std::u16string& sig = pat.first;
 			std::vector<size_t>& caller_addrs = pat.second.first;
-			for (size_t a = 0, b = sig.find_first_of((char16_t) 0);
-					b < sig.size(); ++a, ++b) {
+			for (size_t a = 0; a < sig.size(); ++a) {
 
-				outs << ev_to_descr((event) sig[a]) << " "
-					<< (unsigned int) sig[b] << " @" <<
-					caller_names[caller_addrs[a]];
+				outs << ev_to_descr((event) sig[a]) <<
+					" [0x" << std::hex << caller_xref[caller_addrs[a]]
+					<< "] @" << caller_names[caller_addrs[a]]; 
 				//if (b != sig.size()-1) outs << " >";
 				outs << '\n';
 			}
