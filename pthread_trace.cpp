@@ -38,7 +38,7 @@ int pthread_cond_wait(pthread_cond_t* cond, pthread_mutex_t* lk) {
 	GET_REAL_FN(pthread_cond_wait, int, pthread_cond_t*, pthread_mutex_t*);
 	int e = REAL_FN(cond, lk);
 	if (e == 0) the_tracer.add_event(lktrace::event::COND_LEAVE, (size_t) cond);
-	else the_tracer.add_event(lktrace::event::COND_ERR, (size_t) lk);
+	else the_tracer.add_event(lktrace::event::COND_ERR, (size_t) cond);
 	return e;
 }
 

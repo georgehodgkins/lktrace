@@ -1,0 +1,27 @@
+
+{
+   valgrind--lktrace_pthread_cond_signal
+   Memcheck:Leak
+   match-leak-kinds: definite
+   fun:calloc
+   fun:pthread_cond_signal@GLIBC_2.2.5
+   fun:pthread_cond_signal
+}
+
+{
+   valgrind--lktrace_pthread_cond_wait
+   Memcheck:Leak
+   match-leak-kinds: definite
+   fun:calloc
+   fun:pthread_cond_wait@GLIBC_2.2.5
+   fun:pthread_cond_wait
+}
+
+{
+   valgrind--lktrace_pthread_cond_broadcast
+   Memcheck:Leak
+   match-leak-kinds: definite
+   fun:calloc
+   fun:pthread_cond_broadcast@GLIBC_2.2.5
+   fun:pthread_cond_broadcast
+}

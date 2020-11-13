@@ -2,6 +2,8 @@ Lktrace: preloader-based lock tracing tool
 Currently only targets Pthreads but it would be easy to add other libraries
 Written in C++
 
+Depends: libbfd, libdl, libpthread, libcds
+All of these except for libcds are probably already present on a standard Linux system. 
 
 This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -42,3 +44,8 @@ combined with a single dump file as an argument (to the entire program):
 Multiple of these can be selected on one run of the program. You can also redirect the output
 to a file rather than stdout with the -o flag.
 
+Notes:
+- If, for some reason, you want to run Valgrind on a program with the tracer attached,
+	you should pass --suppressions=/path/to/lktrace.supp to valgrind, to suppress
+	reporting of some leaks in PThreads that are normally suppressed by Valgrind, but
+	are not suppressed when Pthreads is accessed through the tracer.

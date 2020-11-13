@@ -1,5 +1,5 @@
 CFLAGS = -g -O0 -Wall -Wextra -fPIC 
-DEPS = -lcds -ldl -lelf -lbfd -pthread
+DEPS = -lcds -ldl -lbfd -pthread
 
 all: pthread_trace.so lkdump
 

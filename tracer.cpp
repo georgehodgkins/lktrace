@@ -111,6 +111,7 @@ tracer::~tracer () { // purpose of this destructor is to write out our results
 
 
 	// clean up cds
+	cds::threading::Manager::detachThread();
 	cds::Terminate();
 }
 
