@@ -3,10 +3,11 @@
 #include <unordered_map>
 #include <string>
 #include <sstream>
+#include <iostream>
 
 #include <cassert>
 
-#include "hist.h"
+#include "event.h"
 
 namespace lktrace {
 
@@ -14,10 +15,8 @@ namespace lktrace {
 struct log_entry {
 	event ev; // event code
 	size_t ts; // timestamp
-	size_t addr; // address of sync object (per-thrd log) or tid (per-obj log)
-	std::string caller; // string name of caller
-	size_t offset; // offset from caller addr
-	size_t call_addr; // caller addr
+	size_t obj; // address of sync object (per-thrd log) or tid (per-obj log)
+	size_t caller; // address of caller
 };
 
 class parser {
@@ -35,8 +34,12 @@ class parser {
 	// key=tid
 	std::unordered_map<size_t, std::string> thrd_hooks;
 
-	// symbol names+offset of caller addresses
+	// resolved names of caller addresses
+	// key=in-memory addr
 	std::unordered_map<size_t, std::string> caller_names;
+
+	// corresponding object addrs for caller addresses
+	std::unordered_map<size_t, size_t> caller_xref;
 	
 	// locking pattern results per-thread
 	// key=tid -> key = pattern signature -> caller list + count
@@ -44,7 +47,7 @@ class parser {
 		std::u16string, std::pair<std::vector<size_t>, size_t> > > lk_patterns;
 
 	// tid of master
-	//const size_t master_tid;
+//	const size_t master_tid;
 
 	public:
 	parser(std::string);

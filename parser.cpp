@@ -1,7 +1,11 @@
 #include "parser.h"
 
 #define CHECKED_CONSUME(stream, c) \
-	assert(stream.peek() == c); \
+	if (stream.peek() != c) { \
+		std::cerr << "actual: "<< stream.get() << ' ' \
+			<< std::hex << stream.rdstate() << '\n'; \
+		assert(stream.peek() == c); \
+	} \
 	stream.get() // semicolon absence intentional
 
 #define NEW_LOG(key) std::make_pair(key, std::vector<log_entry>())
@@ -200,13 +204,14 @@ void parser::dump_threads(std::ostream& outs) {
 		size_t tid = it->first;
 		auto hist = it->second;
 		std::string& hook = thrd_hooks.at(tid);
+		//std::string hook = "<optimized out>";
 
 		outs << "=====\n";
 		outs << "Thread 0x" << std::hex << tid << " (hook=" << hook << "):\n";
 		for (log_entry& L : hist) {
-			outs << ev_to_descr(L.ev) << " 0x" << L.addr
-				<< " in " << L.caller << '+' << L.offset 
-				<< " [0x" << L.call_addr << "]\n";
+			outs << ev_to_descr(L.ev) << " 0x" << L.obj
+				<< " in " << caller_names[L.caller] 
+				<< " [0x" << L.caller << "]\n";
 		}
 		outs << '\n';
 	}

@@ -1,9 +1,10 @@
 #include "tracer.h"
-
-extern void* _start;
+#include "addr2line.h" // avoid multiple defns
 
 namespace lktrace {
 
+/*---------------------------class tracer-----------------------------*/
+	
 size_t tracer::get_tid () { // an alias for pthread_self, cast to size_t
 	typedef pthread_t (*pthr_self_t)(void);
 	static const pthr_self_t pthr_self = (pthr_self_t) dlsym(RTLD_NEXT, "pthread_self");
@@ -14,7 +15,7 @@ size_t tracer::get_tid () { // an alias for pthread_self, cast to size_t
 // callback to find the .so after ours in the list (ie get our own address range)
 // we pass in the start address in the data field, 
 // the end address is returned in data
-// TODO: use link map instead
+// TODO: use link map instead?
 int phdr_callback (dl_phdr_info *info, size_t sz, void* data) {
 	static size_t prev = 0;
 	if (info->dlpi_addr == *(size_t*) data) *(size_t*) data = prev;
@@ -48,6 +49,9 @@ tracer::~tracer () { // purpose of this destructor is to write out our results
 
 	if (multithreaded) { // don't write anything out if there was never >1 thread
 
+	// when we find a dscriptor string for an address using addr2line, we store it here
+	std::unordered_map<size_t, std::string> caller_name_cache;
+
 	string fname = "lktracedat-";
 	fname += to_string(getpid());
 
@@ -59,110 +63,49 @@ tracer::~tracer () { // purpose of this destructor is to write out our results
 		size_t tid = hist_it->first;
 		vector<hist_entry> hist = hist_it->second;
 		assert(hist.front().ev == event::THRD_SPAWN);
+		
 		// get the name of the thread hook
-		Dl_info hook_info;
-		if (hist.front().addr != 0) {
-			int e = dladdr((void*) hist.front().addr, &hook_info);
-			assert(e != 0);
+		auto h_it = caller_name_cache.find((size_t) hist.front().addr);
+		if (h_it == caller_name_cache.end()) {
+			std::string name = (hist.front().addr == 0) ? "<program entry point>"
+				: addr2line((size_t) hist.front().addr);	
+			auto emplit = caller_name_cache.insert(
+				std::make_pair((size_t) hist.front().addr, name));
+			assert(emplit.second);
 		}
-		if (tid == get_tid()) outfile << "M:";
-		else outfile << "T:"; 
-		outfile << hex << tid << ':';
-		if (hist.front().addr == 0) {
-			outfile << "<program entry point>";
-		} else if (hook_info.dli_sname != NULL) {
-			outfile << hook_info.dli_sname;
-		} else {
-			outfile << hook_info.dli_fname;
-			// log offset here to help with debug
-			outfile << '+' << hist.front().addr - (size_t) hook_info.dli_fbase; 
-		}
-		outfile << ":\n";
-
+		
+		outfile << '[';
+		if (tid == get_tid()) outfile << "t";
+		else outfile << "t"; 
+		outfile << ":0x" << hex << tid << ":0x" << hist.front().addr << "]\n";
 		for (hist_entry& entry : hist) {
 			// write timestamp
 			outfile << dec << (entry.ts - init_time).count() << ':';
 			// write event code
-			switch (entry.ev) {
-				case (event::LOCK_REQ):
-					outfile << "LQ";
-					break;
-				case (event::LOCK_ACQ):
-					outfile << "LA";
-					break;
-				case (event::LOCK_REL):
-					outfile << "LR";
-					break;
-				case (event::LOCK_ERR):
-					outfile << "LE";
-					break;
-				case (event::COND_WAIT):
-					outfile << "CW";
-					break;
-				case (event::COND_LEAVE):
-					outfile << "CL";
-					break;
-				case (event::COND_SIGNAL):
-					outfile << "CS";
-					break;
-				case (event::COND_BRDCST):
-					outfile << "CB";
-					break;
-				case (event::COND_ERR):
-					outfile << "CE";
-					break;
-				case (event::THRD_SPAWN):
-					outfile << "TS";
-					break;
-				case (event::THRD_EXIT):
-					outfile << "TE";
-					break;
+			outfile << ev_code_to_str(entry.ev);
+			// write object & caller addrs
+			outfile << ":0x" << hex << entry.addr
+				<< ":0x" << (size_t) entry.caller << '\n';
+
+			// look up and cache caller name if not already present
+			auto call_it = caller_name_cache.find((size_t) entry.caller);
+			if (call_it == caller_name_cache.end()) {
+				std::string name = addr2line((size_t) entry.caller);	
+				caller_name_cache.insert(
+					std::make_pair((size_t) entry.caller, name));
 			}
-			// write object addr
-			outfile << ":0x" << hex << entry.addr << ':';
-			// get and demangle caller name
-			Dl_info caller_info;
-			int e = dladdr(entry.caller, &caller_info);
-			assert(e != 0);
-			const char* name;
-			long int offset;
-			
-			if (caller_info.dli_sname != NULL) { // found good match 
-				name = caller_info.dli_sname;
-				offset = (long int) entry.caller -
-					(long int)caller_info.dli_saddr;
-			} else { // no matching defn, just give filename & offset in file
-				name = caller_info.dli_fname;
-				offset = (long int) entry.caller - 
-					(long int) caller_info.dli_fbase;
-			}	
-			// skip prepended filename
-//			char* name_begin = strchr(mangled_name, '(') + 1;
-//			if (name_begin != nullptr && 
-//					name_begin[0] == '_' && name_begin[1] == 'Z') { 
-//				// hopefully this string isn't used elsewhere because
-//				// it's getting chopped up
-//				char* name_end = strchr(name_begin, '+');
-//				assert (name_end);
-//				*name_end = '\0';
-//
-//				int stat = 0;
-//				char* demangled_name = abi::__cxa_demangle(name_begin,
-//						nullptr, nullptr, &stat);
-//				assert(stat == 0);
-//				outfile << demangled_name;
-//				free(demangled_name);
-//			} else { // name is not in expected format, just write it out
-//				outfile << mangled_name;
-//			}
-			// write offset from function entry and full caller address
-			outfile << name << "+0x" << offset << ":0x" <<
-			       (size_t) entry.caller << '\n';
 
 		}
 		outfile << '\n';
 	}
+	// write out cached caller names
+	outfile << "[n:]\n";
+	for (auto caller : caller_name_cache) {
+		outfile << "0x" << caller.first << ':' << caller.second << '\n';
+	}
+	outfile << '\n';
 
+	addr2line_cache_cleanup(); // close opened object files
 	outfile.close();
 	} // if (multithreaded)
 
@@ -203,11 +146,7 @@ void tracer::sever_this_thread(bool mt) {
 }
 
 // add an event to the calling thread's history
-//
-// note that in order for backtracing to work correctly, 
-// this function should only be called by pthread_* methods
-//
-// other class methods have to add events directly
+// hist_entry ctor gets timestamp & stack trace
 void tracer::add_event(event e, size_t obj_addr) {
 	size_t tid = get_tid();
 	hist_map::iterator hist = histories.contains(tid);

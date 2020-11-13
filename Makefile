@@ -1,13 +1,13 @@
-CFLAGS = -g -O0 -Wall -Wextra -fPIC
-DEPS = -lcds -ldl -pthread
+CFLAGS = -g -O0 -Wall -Wextra -fPIC 
+DEPS = -lcds -ldl -lelf -lbfd -pthread
 
 all: pthread_trace.so lkdump
 
-pthread_trace.so: pthread_trace.cpp hist.o tracer.o
+pthread_trace.so: pthread_trace.cpp tracer.o addr2line.h
 	g++ $(CFLAGS) -shared -o $@ pthread_trace.cpp -Wl,--whole-archive \
-	      	hist.o tracer.o -L. -pthread -Wl,--no-whole-archive $(DEPS)
+	      	tracer.o -L. -pthread -Wl,--no-whole-archive $(DEPS)
 
-lkdump: lkdump.cpp hist.o parser.o
+lkdump: lkdump.cpp parser.o
 	g++ $(CFLAGS) -o $@ $^
 
 %.o: %.cpp
