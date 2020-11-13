@@ -3,6 +3,7 @@
 #define MAX_THRD_COUNT 100 // defines max size of hash map used
 
 #include <vector> // event histories 
+#include <unordered_map>
 #include <chrono> // timestamps
 #include <string> 
 #include <fstream>
@@ -32,15 +33,30 @@
 #include <cds/container/michael_map_nogc.h>
 #include <cds/container/michael_kvlist_nogc.h>
 
-#include "hist.h"
+#include "event.h"
 //#include <pthread.h>
-
 
 namespace lktrace {
 
 using namespace std;
-
 			
+// thread history entry
+struct hist_entry {
+	std::chrono::time_point<std::chrono::steady_clock> ts;
+	event ev;
+	void* caller;
+	size_t addr;
+
+	// ctor that looks up caller	
+	hist_entry(event, size_t);
+	// pass in caller to ctor
+	hist_entry(event, size_t, void*);
+
+	// start and end address of our own code (for stack tracing) 
+	static size_t start_addr;
+	static size_t end_addr; // technically the start addr of the next .so
+};
+
 // history type (concurrent hash map from tids to vectors of hist_entry)
 // does not support removing entries bcs garbage collection is turned off
 using hist_map = cds::container::MichaelHashMap<cds::gc::nogc,
@@ -76,5 +92,6 @@ class tracer {
 	static size_t get_tid();	
 
 }; 
+
 
 } // namespace lktrace 

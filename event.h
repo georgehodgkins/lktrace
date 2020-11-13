@@ -1,37 +1,20 @@
-#include "hist.h"
-
-// how many levels up in the stack we look for code 
-#define TRACE_DEPTH 8
+#pragma once
+#include <chrono>
+#include <execinfo.h>
+#include <cassert>
+#include <string>
 
 namespace lktrace {
 
-using namespace std;
+// these are 16-bit and count down from the top so that
+// the weird pattern matching method we use works properly
+// see find_patterns() in parser.cpp
+enum class event : char16_t {LOCK_REQ = 0xFFFF, LOCK_ACQ = 0xFFFE, LOCK_REL = 0xFFFD,
+	LOCK_ERR = 0xFFFC, COND_WAIT = 0xFFFB, COND_LEAVE = 0xFFFA, COND_SIGNAL = 0xFFF9,
+	COND_BRDCST = 0xFFF8, COND_ERR = 0xFFF7, THRD_SPAWN = 0xFFF6, THRD_EXIT = 0xFFF5};
 
-// define static vars
-size_t hist_entry::start_addr = 0;
-size_t hist_entry::end_addr = 0;
 
-hist_entry::hist_entry(event e, size_t obj_addr) : 
-	ts(chrono::steady_clock::now()), ev(e), addr(obj_addr) {
-
-	// these should be set in the tracer ctor	
-	assert(start_addr && end_addr);
-		
-	void* buf[TRACE_DEPTH];
-	int v = backtrace(buf, TRACE_DEPTH);
-	int a = 0;
-	// find first frame outside of our own code
-	while (a < v && start_addr < (size_t) buf[a] &&
-		end_addr > (size_t) buf[a]) ++a;
-	assert(a < v);
-	caller = buf[a]; 
-}
-
-// ctor overload to manually set caller addr rather than looking it up
-hist_entry::hist_entry(event e, size_t obj_addr, void* c) :
-	ts(chrono::steady_clock::now()), ev(e), caller(c), addr(obj_addr) {}
-
-event ev_str_to_code(std::string str) {
+inline event ev_str_to_code(std::string str) {
 	event ev;
 	switch (str[0]) {
 	case ('T'):
@@ -67,7 +50,7 @@ event ev_str_to_code(std::string str) {
 	return ev;
 }
 
-std::string ev_to_descr(event ev) {
+inline std::string ev_to_descr(event ev) {
 	std::string str;
 	switch (ev) {
 	case (event::THRD_SPAWN): str = "Spawned thread"; break;
@@ -82,6 +65,37 @@ std::string ev_to_descr(event ev) {
 	case (event::COND_BRDCST): str = "Broadcasted condvar"; break;
 	case (event::COND_ERR): str = "Error waiting on condvar"; break;
 	}
+
 	return str;
 }
+
+inline std::string ev_code_to_str (event ev) {
+	switch (ev) {
+		case (event::LOCK_REQ):
+			return "LQ";
+		case (event::LOCK_ACQ):
+			return "LA";
+		case (event::LOCK_REL):
+			return "LR";
+		case (event::LOCK_ERR):
+			return "LE";
+		case (event::COND_WAIT):
+			return "CW";
+		case (event::COND_LEAVE):
+			return "CL";
+		case (event::COND_SIGNAL):
+			return "CS";
+		case (event::COND_BRDCST):
+			return "CB";
+		case (event::COND_ERR):
+			return "CE";
+		case (event::THRD_SPAWN):
+			return "TS";
+		case (event::THRD_EXIT):
+			return "TE";
+		default:
+			return "<bad>";
+	}
+}
+
 } // namespace lktrace

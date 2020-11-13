@@ -216,4 +216,35 @@ void tracer::add_event(event e, size_t obj_addr) {
 	hist->second.push_back(ev);
 }
 
+/*-----------------class hist_entry----------------------------*/
+
+
+// define static vars (bounds of our own code in memory)
+size_t hist_entry::start_addr = 0;
+size_t hist_entry::end_addr = 0;
+
+// how many frames up to look for calling code
+#define TRACE_DEPTH 8
+
+hist_entry::hist_entry(event e, size_t obj_addr) : 
+	ts(chrono::steady_clock::now()), ev(e), addr(obj_addr) {
+
+	// these are set in the tracer ctor	
+	assert(start_addr && end_addr);
+		
+	void* buf[TRACE_DEPTH];
+	int v = backtrace(buf, TRACE_DEPTH);
+	int a = 0;
+	// find first frame outside of our own code
+	while (a < v && start_addr < (size_t) buf[a] &&
+		end_addr > (size_t) buf[a]) ++a;
+	assert(a < v);
+	caller = buf[a]; 
+}
+
+// ctor overload to manually set caller addr rather than looking it up
+// used when spawning threads; obviously, we can't stack trace from within a thread to the code that created it
+hist_entry::hist_entry(event e, size_t obj_addr, void* c) :
+	ts(chrono::steady_clock::now()), ev(e), caller(c), addr(obj_addr) {}
+
 } // namespace lktrace
