@@ -32,10 +32,12 @@ tracer::tracer() :
 		Dl_info info;
 		dladdr((void*) &phdr_callback, &info);
 		hist_entry::start_addr = (size_t) info.dli_fbase;
-		size_t get_addr = hist_entry::start_addr;
-		dl_iterate_phdr(&phdr_callback, (void*) &get_addr);
-		assert(get_addr > hist_entry::start_addr);
-		hist_entry::end_addr = get_addr;
+		bfd* abfd = bfd_openr(info.dli_fname, NULL);
+		abfd->flags |= BFD_DECOMPRESS;
+		if (!bfd_check_format(abfd, bfd_object)) assert (false);
+		hist_entry::end_addr = hist_entry::start_addr +
+			(size_t) bfd_get_size(abfd);
+		bfd_close(abfd);
 		// register master thread
 		void* buf[2];
 		int e = backtrace(buf, 2);
