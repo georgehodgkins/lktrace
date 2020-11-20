@@ -1,8 +1,7 @@
 /* addr2line.c -- convert addresses to line number and function name
-   Copyright (C) 1997-2020 Free Software Foundation, Inc.
-   Contributed by Ulrich Lauther <Ulrich.Lauther@mchp.siemens.de>
 
-   This file is part of GNU Binutils.
+   This file was part of GNU Binutils until a lazy programmer stole it
+   because it could find symbol names better than their own solution.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -15,25 +14,17 @@
    GNU General Public License for more details.
 
    You should have received a copy of the GNU General Public License
-   along with this program; if not, write to the Free Software
+   along with this program (./LICENSE); if not, write to the Free Software
    Foundation, 51 Franklin Street - Fifth Floor, Boston,
    MA 02110-1301, USA.  */
 
 
-/* Derived from objdump.c and nm.c by Ulrich.Lauther@mchp.siemens.de
-
-   Usage:
-   addr2line [options] addr addr ...
-   or
-   addr2line [options]
-
-   both forms write results to stdout, the second form reads addresses
-   to be converted from stdin.  */
+/* Derived from objdump.c and nm.c by Ulrich.Lauther@mchp.siemens.de */
 
 /* Significantly modified for use in the lktrace utility as a library call:
  * - we C++ now (I like std::string)
  * - brought in dladdr() so we can perform a lookup based on runtime address alone
- * - removed file error checking (files returned from dladdr() must be valid binaries)
+ * - removed file error checking (files returned from dladdr() are all valid binaries)
  * - cache opened files & symtabs (programs should call addr2line_cache_cleanup() when done)
  * --GH, Nov. 2020
  * */
@@ -129,7 +120,7 @@ std::string translate_address (bfd *abfd, bfd_vma pc, asymbol** symtab)
 	  pc &= (sign << 1) - 1;
 	  if (bed->sign_extend_vma)
 	    pc = (pc ^ sign) - sign;
-	}*/
+	}*/ // this block depends on internal libbfd functions we don't have
 
 
       std::string rtn = "";
@@ -139,6 +130,7 @@ std::string translate_address (bfd *abfd, bfd_vma pc, asymbol** symtab)
       unsigned int discriminator;
 
 
+      // find section address belongs to
 	bfd_boolean found = FALSE;
 	for (asection *s = abfd->sections; s != NULL; s = s->next) {
 
@@ -155,6 +147,7 @@ std::string translate_address (bfd *abfd, bfd_vma pc, asymbol** symtab)
 	}
 
 	// output format is fn_name@srcfile_name:line_discriminator
+	// or empty string if not found
 	if (found) {
 		// parse function name, demangle if necessary
 		if (!fn_name || *fn_name == '\0') rtn += "??";
@@ -168,21 +161,22 @@ std::string translate_address (bfd *abfd, bfd_vma pc, asymbol** symtab)
 		rtn += '@';
 
 		// strip path off of filename if present
-		if (!srcfile_name) rtn += "??";
-		else {
+		// TODO: provide full path, let the parser strip it
+		if (srcfile_name) {
 			const char* h = strrchr (srcfile_name, '/');
 			if (h != NULL) rtn += (h+1);
 			else rtn += srcfile_name;
-		}
-		rtn += ':';
+		
+			rtn += ':';
 
-		// line number
-		if (line == 0) rtn += "??";
-		else {
-			rtn += to_string(line);
-			if (discriminator) {
-				rtn += "_";
-				rtn += to_string(discriminator);
+			// line number
+			if (line == 0) rtn += "??";
+			else {
+				rtn += to_string(line);
+				if (discriminator) {
+					rtn += "_";
+					rtn += to_string(discriminator);
+				}
 			}
 		}
 	}
@@ -218,15 +212,17 @@ std::string addr2line (const size_t addr)
 
 		open_files.insert(std::make_pair(std::string(info.dli_fname),
 			std::make_pair(abfd, symtab)));
-	} else {
+	} else { // file already open
 		abfd = f_it->second.first;
 		symtab = f_it->second.second;
 	}
+
 	bfd_vma file_addr = (bfd_vma) (addr - (size_t) info.dli_fbase);
 
 	std::string rtn = translate_address (abfd, file_addr, symtab);
 
-	if (rtn.empty()) { // not found, just give file name+offset
+	if (rtn.empty() || rtn.back() == '@') { // not found, or source info not found
+		// fall back to providing file name and offset
 		rtn += info.dli_fname;
 		rtn += "+0x";
 		rtn += to_hex_string((size_t) file_addr);

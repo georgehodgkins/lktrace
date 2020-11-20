@@ -21,7 +21,7 @@ parser::parser(std::string fname) :
 	while(trace.peek() != -1) {
 		// TODO: handle errors w/ exceptions
 		CHECKED_CONSUME(trace, '[');
-		std::string bdes;
+		std::string bdes; // block designator
 		getline(trace, bdes, ':');
 		if (bdes[0] == 't' || bdes[0] == 'm') { // a thread block
 			size_t tid;
@@ -74,8 +74,7 @@ parser::parser(std::string fname) :
 				// add xref
 				caller_xref.insert(std::make_pair(L.caller, L.obj));
 			}
-		} else if (bdes[0] == 'n') {
-			// TODO: fix
+		} else if (bdes[0] == 'n') { // a string table block
 			trace.ignore(8, '\n');
 			while (trace.peek() != '\n') {
 				std::pair<size_t, std::string> tab;
@@ -88,11 +87,13 @@ parser::parser(std::string fname) :
 		CHECKED_CONSUME(trace, '\n');
 	}
 	trace.close();
+
 	// cross-reference thread hooks
 	for (auto hist_v : thrd_hist) {
 		auto it = caller_names.find(hist_v.second.front().obj);
 		assert(it != caller_names.end());
 		// map tid to hook
+		// TODO: use hook addr instead
 		thrd_hooks.insert(std::make_pair(hist_v.first, it->second));
 	}
 }
