@@ -20,7 +20,6 @@
 #include <link.h> // dl_iterate_phdr() linker symbol lookup
 #include <execinfo.h> // backtrace()
 #include <unistd.h>  // free()
-#include <cxxabi.h> // __cxx_demangle()
 
 // this is what happens when you overuse templates
 //
@@ -34,7 +33,8 @@
 #include <cds/container/michael_kvlist_nogc.h>
 
 #include "event.h"
-//#include <pthread.h>
+
+
 
 namespace lktrace {
 
@@ -76,9 +76,17 @@ class tracer {
 	// register thread with libcds tracking
 	static void cds_register_thread();
 
+
+	
+
 	public:
 	tracer();
 	~tracer();
+
+	// we need to avoid tracing locks used by the allocator
+	// (doing so causes immediate deadlock bcs add_event allocates an entry)
+	size_t alloc_start;
+	size_t alloc_end;
 
 	// add a new thread (new hash map entry) with tid of current
 	void add_this_thread(size_t hook, void* caller, bool mt = true);

@@ -1,6 +1,7 @@
 #include <pthread.h> 
 #include <dlfcn.h>
 #include <execinfo.h>
+#include <iostream>
 #include "tracer.h"
 
 // look up actual pthreads function
@@ -9,49 +10,86 @@
 	static const real_fn_t REAL_FN = (real_fn_t) dlsym(RTLD_NEXT, #name); \
 	assert(REAL_FN != NULL) // semicolon absence intentional
 
-// global tracing object, writes out results in its destructor
+
+//#define LKTRACE_DEBUG 1
 lktrace::tracer the_tracer;
 
+// trying to trace locks inside the allocator causes infinite recursion leading to deadlock
+// this function detects that, with the help of lookups in the tracer ctor
+// only checks the caller two frames up
+//
+// this has to be checked up here rather than in tracer becuase dlsym allocates stuff
+bool caller_is_allocator() {
+	// never trace if the tracer ctor is not complete yet
+	if (the_tracer.alloc_start == 0) return true;
+	
+	void* buf[3];
+	backtrace(buf, 3);
+	return ((size_t) buf[2] > the_tracer.alloc_start &&
+			(size_t) buf[2] < the_tracer.alloc_end);
+}
+
+// the __ methods are the actual function that the normal ones alias
+// handy for us, since a dlsym call inside the memory allocator causes infinite recursion
+//
+// for some reason, libpthread.so only exposes the leading underscore variants for mutex
+// functions, even though the naming convention is the same for condvar fns
+//
+// hopefully there's not a memory allocator out there that uses condvars
+extern "C" int __pthread_mutex_lock(pthread_mutex_t*);
 int pthread_mutex_lock(pthread_mutex_t* lk) {
+	
 	// log arrival at lock
-	the_tracer.add_event(lktrace::event::LOCK_REQ, (size_t) lk);
+	if (!caller_is_allocator())
+		the_tracer.add_event(lktrace::event::LOCK_REQ, (size_t) lk);
 	// run pthreads function
-	GET_REAL_FN(pthread_mutex_lock, int, pthread_mutex_t*);
-	int e = REAL_FN(lk);
-	if (e == 0) the_tracer.add_event(lktrace::event::LOCK_ACQ, (size_t) lk);
-	else the_tracer.add_event(lktrace::event::LOCK_ERR, (size_t) lk);
+//	GET_REAL_FN(pthread_mutex_lock, int, pthread_mutex_t*);
+//	int e = REAL_FN(lk);
+	int e = __pthread_mutex_lock(lk);
+	if (!caller_is_allocator()) {
+		if (e == 0) the_tracer.add_event(lktrace::event::LOCK_ACQ, (size_t) lk);
+		else the_tracer.add_event(lktrace::event::LOCK_ERR, (size_t) lk);
+	}
 	return e;
 }
 
+extern "C" int __pthread_mutex_unlock(pthread_mutex_t*);
 int pthread_mutex_unlock(pthread_mutex_t* lk) {
 	// log lock release
-	the_tracer.add_event(lktrace::event::LOCK_REL, (size_t) lk);
+	if(!caller_is_allocator())
+		the_tracer.add_event(lktrace::event::LOCK_REL, (size_t) lk);
 	// run pthreads function
-	GET_REAL_FN(pthread_mutex_unlock, int, pthread_mutex_t*);
-	return REAL_FN(lk);
+//	GET_REAL_FN(pthread_mutex_unlock, int, pthread_mutex_t*);
+//	return REAL_FN(lk);
+	return __pthread_mutex_unlock(lk);
 }
 
 int pthread_cond_wait(pthread_cond_t* cond, pthread_mutex_t* lk) {
 	// log arrival at wait
-	the_tracer.add_event(lktrace::event::COND_WAIT, (size_t) cond); 
+	if (!caller_is_allocator())
+		the_tracer.add_event(lktrace::event::COND_WAIT, (size_t) cond); 
 	// run pthreads function
 	GET_REAL_FN(pthread_cond_wait, int, pthread_cond_t*, pthread_mutex_t*);
 	int e = REAL_FN(cond, lk);
-	if (e == 0) the_tracer.add_event(lktrace::event::COND_LEAVE, (size_t) cond);
-	else the_tracer.add_event(lktrace::event::COND_ERR, (size_t) cond);
+	if (!caller_is_allocator()) {
+		if (e == 0) the_tracer.add_event(lktrace::event::COND_LEAVE, (size_t) cond);
+		else the_tracer.add_event(lktrace::event::COND_ERR, (size_t) cond);
+	}
 	return e;
 }
 
 int pthread_cond_signal(pthread_cond_t* cond) {
 	// log cond signal
-	the_tracer.add_event(lktrace::event::COND_SIGNAL, (size_t) cond);
+	if (!caller_is_allocator())
+		the_tracer.add_event(lktrace::event::COND_SIGNAL, (size_t) cond);
 	// run pthreads function
 	GET_REAL_FN(pthread_cond_signal, int, pthread_cond_t*);
 	return REAL_FN(cond);
 }
 
 int pthread_cond_broadcast(pthread_cond_t* cond) {
-	the_tracer.add_event(lktrace::event::COND_BRDCST, (size_t) cond);
+	if (!caller_is_allocator())
+		the_tracer.add_event(lktrace::event::COND_BRDCST, (size_t) cond);
 	GET_REAL_FN(pthread_cond_broadcast, int, pthread_cond_t*);
 	return REAL_FN(cond);
 }

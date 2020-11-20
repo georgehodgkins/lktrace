@@ -25,24 +25,23 @@ int phdr_callback (dl_phdr_info *info, size_t sz, void* data) {
 	
 tracer::tracer() : 
 	histories(MAX_THRD_COUNT, 1), 
-	init_time(chrono::steady_clock::now()) {
+	init_time(chrono::steady_clock::now()),
+	alloc_start(0), alloc_end(0) {
 		// set up cds thread tracking
 		cds::Initialize();
 		// find beginning and end of our .so
-		Dl_info info;
-		dladdr((void*) &phdr_callback, &info);
-		hist_entry::start_addr = (size_t) info.dli_fbase;
-		bfd* abfd = bfd_openr(info.dli_fname, NULL);
-		abfd->flags |= BFD_DECOMPRESS;
-		if (!bfd_check_format(abfd, bfd_object)) assert (false);
-		hist_entry::end_addr = hist_entry::start_addr +
-			(size_t) bfd_get_size(abfd);
-		bfd_close(abfd);
+		find_obj_bounds((void*) &addr2line, hist_entry::start_addr, hist_entry::end_addr);
+		// find beginning and end of allocator .so
+		size_t local_as;
+		find_obj_bounds((void*) &malloc, local_as, alloc_end);
 		// register master thread
 		void* buf[2];
 		int e = backtrace(buf, 2);
 		assert(e == 2);
 		add_this_thread(0, buf[1],  false);
+		// this assignment must be deferred to here
+		// because the first run (only) of backtrace calls the allocator
+		alloc_start = local_as;
 }
 
 tracer::~tracer () { // purpose of this destructor is to write out our results
@@ -167,6 +166,12 @@ size_t hist_entry::end_addr = 0;
 
 // how many frames up to look for calling code
 #define TRACE_DEPTH 8
+// frames to skip after reaching code outside this library
+// 
+// used to trace programs which wrap their calls to the traced library 
+// in their own lock(), unlock(), etc
+// TODO: this should be a runtime parameter once those are a thing
+#define TRACE_SKIP 2
 
 hist_entry::hist_entry(event e, size_t obj_addr) : 
 	ts(chrono::steady_clock::now()), ev(e), addr(obj_addr) {
@@ -180,7 +185,9 @@ hist_entry::hist_entry(event e, size_t obj_addr) :
 	// find first frame outside of our own code
 	while (a < v && start_addr < (size_t) buf[a] &&
 		end_addr > (size_t) buf[a]) ++a;
-	assert(a < v);
+	// skip requested amount of frames
+	a += TRACE_SKIP;
+	if (a >= v) a = v-1;
 	caller = buf[a]; 
 }
 

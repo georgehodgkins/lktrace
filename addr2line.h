@@ -241,6 +241,20 @@ void addr2line_cache_cleanup() {
 	open_files.clear();
 }
 
+// find the in-mem boundaries of the binary containing the given address
+void find_obj_bounds (const void* addr, size_t& start, size_t& end) {
+		assert(addr);
+		Dl_info info;
+		dladdr(addr, &info);
+		start = (size_t) info.dli_fbase;
+		bfd* abfd = bfd_openr(info.dli_fname, NULL);
+		abfd->flags |= BFD_DECOMPRESS;
+		if (!bfd_check_format(abfd, bfd_object)) assert (false);
+		end = start +
+			(size_t) bfd_get_size(abfd);
+		bfd_close(abfd);
+}
+
 
 } // namespace lktrace
 
