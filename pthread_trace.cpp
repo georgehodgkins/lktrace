@@ -1,13 +1,19 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include <pthread.h> 
 #include <dlfcn.h>
 #include <execinfo.h>
 #include <iostream>
 #include "tracer.h"
 
+#define NEW_GLIBC_VERSTR "GLIBC_2.3.2" 
+#define OLD_GLIBC_VERSTR "GLIBC_2.2.5"
 // look up actual pthreads function
-#define GET_REAL_FN(name, rtn, params...) \
+// TODO: replace dlsym() with hacking pthreads fn table
+#define GET_REAL_FN(name, verstr, rtn, params...) \
 	typedef rtn (*real_fn_t)(params); \
-	static const real_fn_t REAL_FN = (real_fn_t) dlsym(RTLD_NEXT, #name); \
+	static const real_fn_t REAL_FN = (real_fn_t) dlvsym(RTLD_NEXT, #name, verstr); \
 	assert(REAL_FN != NULL) // semicolon absence intentional
 
 
@@ -69,7 +75,8 @@ int pthread_cond_wait(pthread_cond_t* cond, pthread_mutex_t* lk) {
 	if (!caller_is_allocator())
 		the_tracer.add_event(lktrace::event::COND_WAIT, (size_t) cond); 
 	// run pthreads function
-	GET_REAL_FN(pthread_cond_wait, int, pthread_cond_t*, pthread_mutex_t*);
+	GET_REAL_FN(pthread_cond_wait, NEW_GLIBC_VERSTR, 
+			int, pthread_cond_t*, pthread_mutex_t*);
 	int e = REAL_FN(cond, lk);
 	if (!caller_is_allocator()) {
 		if (e == 0) the_tracer.add_event(lktrace::event::COND_LEAVE, (size_t) cond);
@@ -83,14 +90,14 @@ int pthread_cond_signal(pthread_cond_t* cond) {
 	if (!caller_is_allocator())
 		the_tracer.add_event(lktrace::event::COND_SIGNAL, (size_t) cond);
 	// run pthreads function
-	GET_REAL_FN(pthread_cond_signal, int, pthread_cond_t*);
+	GET_REAL_FN(pthread_cond_signal, NEW_GLIBC_VERSTR, int, pthread_cond_t*);
 	return REAL_FN(cond);
 }
 
 int pthread_cond_broadcast(pthread_cond_t* cond) {
 	if (!caller_is_allocator())
 		the_tracer.add_event(lktrace::event::COND_BRDCST, (size_t) cond);
-	GET_REAL_FN(pthread_cond_broadcast, int, pthread_cond_t*);
+	GET_REAL_FN(pthread_cond_broadcast, NEW_GLIBC_VERSTR, int, pthread_cond_t*);
 	return REAL_FN(cond);
 }
 
@@ -125,8 +132,8 @@ void* inject_thread_registration (void* real) {
 
 int pthread_create (pthread_t* thread, const pthread_attr_t *attr, 
 		void *(*hook)(void*), void* arg) {
-	GET_REAL_FN(pthread_create, int, pthread_t*, const pthread_attr_t*,
-			void* (*) (void*), void*);
+	GET_REAL_FN(pthread_create, OLD_GLIBC_VERSTR, int, pthread_t*,
+			const pthread_attr_t*, void* (*) (void*), void*);
 	// we inject some tracking code before starting the real thread
 	//  and record our calling function
 	void* buf[2];
@@ -138,7 +145,7 @@ int pthread_create (pthread_t* thread, const pthread_attr_t *attr,
 
 void pthread_exit (void* rtn) {
 	the_tracer.sever_this_thread();
-	GET_REAL_FN(pthread_exit, void, void*);
+	GET_REAL_FN(pthread_exit, OLD_GLIBC_VERSTR, void, void*);
 	while (1) REAL_FN(rtn); // loop is there to convince compiler that this does not return
 }
 
