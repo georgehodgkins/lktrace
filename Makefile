@@ -2,6 +2,7 @@ CFLAGS = -g -O0 -Wall -Wextra -fPIC
 DEPS = -lcds -ldl -lbfd -pthread
 
 all: pthread_trace.so lkdump
+	rm -f core
 
 pthread_trace.so: pthread_trace.cpp tracer.o addr2line.h
 	g++ $(CFLAGS) -shared -o $@ pthread_trace.cpp -Wl,--whole-archive \

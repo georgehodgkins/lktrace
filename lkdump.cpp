@@ -7,21 +7,24 @@
 int main (int argc, char** argv) {
 	// initialize params
 	std::string out_fname;
-	enum CMD : char {CMD_NONE =0x0, CMD_THREADS = 0x1, CMD_OBJECTS = 0x2,
-		CMD_PATTERNS = 0x4};
+	size_t min_depth = 0;
+	enum CMD : char {CMD_NONE =0x0, CMD_THREADS = 0x1, CMD_PATTERNS = 0x2,
+		CMD_PATTERNS_TXT = 0x4, CMD_GLOBAL = 0x8};
 	CMD the_command = CMD_NONE;
 
 	// setup options
-	enum OPT_ID : int {OPT_OUTFILE = (int) 'o', OPT_THREADS, OPT_OBJECTS, OPT_PATTERNS};
+	enum OPT_ID : int {OPT_OUTFILE = (int) 'o', OPT_DEPTH = (int) 'd',
+		OPT_THREADS, OPT_PATTERNS, OPT_PATTERNS_TXT, OPT_GLOBAL};
 	const option longopts[] = {
 		{"threads", no_argument, nullptr, OPT_THREADS},
-		{"objects", no_argument, nullptr, OPT_OBJECTS},
 		{"patterns", no_argument, nullptr, OPT_PATTERNS},
+		{"patterns-text", no_argument, nullptr, OPT_PATTERNS_TXT},
+		{"global", no_argument, nullptr, OPT_GLOBAL},
 		{0, 0, 0, 0}};
 	int opt;
 
 	// get options
-	while( (opt = getopt_long(argc, argv, "o:", longopts, nullptr)) != -1) {
+	while( (opt = getopt_long(argc, argv, "o:d:", longopts, nullptr)) != -1) {
 		switch (opt) {
 		case (OPT_OUTFILE):
 			out_fname = optarg;
@@ -29,11 +32,17 @@ int main (int argc, char** argv) {
 		case (OPT_THREADS):
 			the_command |= CMD_THREADS;
 			break;
-		case (OPT_OBJECTS):
-			the_command |= CMD_OBJECTS;
-			break;
 		case (OPT_PATTERNS):
 			the_command |= CMD_PATTERNS;
+			break;
+		case (OPT_PATTERNS_TXT):
+			the_command |= CMD_PATTERNS_TXT;
+			break;
+		case (OPT_DEPTH):
+			min_depth = atoi(optarg);
+			break;
+		case (OPT_GLOBAL):
+			the_command |= CMD_GLOBAL;
 			break;
 		default:
 			assert(false && "Default block in option parsing reached!");
@@ -68,12 +77,16 @@ int main (int argc, char** argv) {
 	if (the_command & CMD_THREADS) {
 		P.dump_threads(outs);
 	}
-	if (the_command & CMD_PATTERNS) {
+	if (the_command & CMD_PATTERNS_TXT) {
 		P.find_patterns();
+		P.dump_patterns_txt(outs, min_depth);
+	}
+	if (the_command & CMD_PATTERNS) {
+		P.find_deps(min_depth);
 		P.dump_patterns(outs);
 	}
-	if (the_command & CMD_OBJECTS) {
-		std::cerr << "Object dump does not actually exist yet.";
+	if (the_command & CMD_GLOBAL) {
+		P.dump_global(outs);
 	}
 
 
