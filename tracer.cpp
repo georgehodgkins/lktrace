@@ -6,10 +6,7 @@ namespace lktrace {
 /*---------------------------class tracer-----------------------------*/
 	
 size_t tracer::get_tid () { // an alias for pthread_self, cast to size_t
-	typedef pthread_t (*pthr_self_t)(void);
-	static const pthr_self_t pthr_self = (pthr_self_t) dlsym(RTLD_NEXT, "pthread_self");
-	assert(pthr_self != NULL);
-	return (size_t) pthr_self();
+	return (size_t) pthread_self();
 }
 
 // callback to find the .so after ours in the list (ie get our own address range)
@@ -26,14 +23,15 @@ int phdr_callback (dl_phdr_info *info, size_t sz, void* data) {
 tracer::tracer() : 
 	histories(MAX_THRD_COUNT, 1), 
 	init_time(chrono::steady_clock::now()),
-	alloc_start(0), alloc_end(0) {
+	init_guard(false) {
 		// set up cds thread tracking
 		cds::Initialize();
-		// find beginning and end of our .so
-		find_obj_bounds((void*) &addr2line, hist_entry::start_addr, hist_entry::end_addr);
+		// find beginning and end of our own .so
+		find_obj_bounds((void*) &addr2line,
+				hist_entry::start_addr, hist_entry::end_addr);
 		// find beginning and end of allocator .so
-		size_t local_as;
-		find_obj_bounds((void*) &malloc, local_as, alloc_end);
+		find_obj_bounds((void*) &malloc,
+				hist_entry::alloc_start, hist_entry::alloc_end);
 		// register master thread
 		void* buf[2];
 		int e = backtrace(buf, 2);
@@ -41,7 +39,7 @@ tracer::tracer() :
 		add_this_thread(0, buf[1],  false);
 		// this assignment must be deferred to here
 		// because the first run (only) of backtrace calls the allocator
-		alloc_start = local_as;
+		init_guard = true;
 }
 
 tracer::~tracer () { // purpose of this destructor is to write out our results
@@ -117,6 +115,7 @@ tracer::~tracer () { // purpose of this destructor is to write out our results
 }
 
 void tracer::add_this_thread(size_t hook, void* caller, bool mt) {
+	assert(init_guard || !mt);
 	multithreaded = mt;
 	// register this thread with cds
 	cds::threading::Manager::attachThread();
@@ -130,19 +129,15 @@ void tracer::add_this_thread(size_t hook, void* caller, bool mt) {
 }
 
 void tracer::sever_this_thread(bool mt) {
+	assert(init_guard);
 	// add thread exit event
 	size_t tid = get_tid();
 	hist_map::iterator hist = histories.contains(tid);
 	assert(hist != histories.end());
-	if (!mt) {
-		void* buf[3];
-		int e = backtrace(buf, 3);
-		assert(e == 3);
-		hist->second.emplace_back(event::THRD_EXIT, tid, buf[2]);
-	} else {
-		hist_entry ev (event::THRD_EXIT, tid);
-		hist->second.push_back(ev);
-	}
+	void* buf[3];
+	int e = backtrace(buf, 3);
+	assert(e == 3);
+	hist->second.emplace_back(event::THRD_EXIT, tid, buf[2]);
 	// deregister thread with cds
 	if (mt) cds::threading::Manager::detachThread();
 }
@@ -150,11 +145,17 @@ void tracer::sever_this_thread(bool mt) {
 // add an event to the calling thread's history
 // hist_entry ctor gets timestamp & stack trace
 void tracer::add_event(event e, size_t obj_addr) {
+	if (!init_guard) return;
 	size_t tid = get_tid();
 	hist_map::iterator hist = histories.contains(tid);
 	assert(hist != histories.end());
-	hist_entry ev (e, obj_addr);
-	hist->second.push_back(ev);
+	// the hist_entry ctor will throw std::bad_alloc if the caller
+	// appears to be the memory allocator (we get infinite recursion otherwise)
+	// if this occurs we continue silently (not an error, as such)
+	try {
+		hist_entry ev (e, obj_addr);
+		hist->second.push_back(ev);
+	} catch (std::bad_alloc& e) {}	
 }
 
 /*-----------------class hist_entry----------------------------*/
@@ -163,6 +164,8 @@ void tracer::add_event(event e, size_t obj_addr) {
 // define static vars (bounds of our own code in memory)
 size_t hist_entry::start_addr = 0;
 size_t hist_entry::end_addr = 0;
+size_t hist_entry::alloc_start = 0;
+size_t hist_entry::alloc_end = 0;
 
 // how many frames up to look for calling code
 #define TRACE_DEPTH 8
@@ -171,13 +174,14 @@ size_t hist_entry::end_addr = 0;
 // used to trace programs which wrap their calls to the traced library 
 // in their own lock(), unlock(), etc
 // TODO: this should be a runtime parameter once those are a thing
-#define TRACE_SKIP 2
+#define TRACE_SKIP 0
 
 hist_entry::hist_entry(event e, size_t obj_addr) : 
 	ts(chrono::steady_clock::now()), ev(e), addr(obj_addr) {
 
 	// these are set in the tracer ctor	
 	assert(start_addr && end_addr);
+	assert(alloc_start && alloc_end);
 		
 	void* buf[TRACE_DEPTH];
 	int v = backtrace(buf, TRACE_DEPTH);
@@ -188,11 +192,15 @@ hist_entry::hist_entry(event e, size_t obj_addr) :
 	// skip requested amount of frames
 	a += TRACE_SKIP;
 	if (a >= v) a = v-1;
-	caller = buf[a]; 
+	caller = buf[a];
+
+	if ((size_t) caller > alloc_start &&
+			(size_t) caller < alloc_end) throw std::bad_alloc();
 }
 
 // ctor overload to manually set caller addr rather than looking it up
-// used when spawning threads; obviously, we can't stack trace from within a thread to the code that created it
+// used when spawning threads; obviously, we can't stack trace
+// from within a thread to the code that created it
 hist_entry::hist_entry(event e, size_t obj_addr, void* c) :
 	ts(chrono::steady_clock::now()), ev(e), caller(c), addr(obj_addr) {}
 

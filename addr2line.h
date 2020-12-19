@@ -47,7 +47,8 @@
 namespace lktrace {
 
 // cached opened files and their symtabs
-std::unordered_map<std::string, std::pair<bfd*, asymbol**>> open_files;
+typedef std::unordered_map<std::string, std::pair<bfd*, asymbol**>> bfd_cache;
+bfd_cache open_files;
 
 // TODO: proper error handling
 void* xmalloc (size_t a) {
@@ -184,6 +185,26 @@ std::string translate_address (bfd *abfd, bfd_vma pc, asymbol** symtab)
 	return rtn;
 }
 
+bfd_cache::iterator open_objfile (const char* fname) {
+		bfd* abfd = bfd_openr (fname, NULL);
+		assert(abfd != NULL);
+
+		abfd->flags |= BFD_DECOMPRESS;
+		// this call is required (sets format flags on the file handle)
+		// even though we can already be pretty sure the object is of this format
+		if (!bfd_check_format(abfd, bfd_object)) {
+		  assert(false);
+		  return open_files.end();
+		}
+
+		asymbol** symtab = slurp_symtab (abfd);
+		assert(symtab != NULL);
+
+		auto emplit = open_files.insert(std::make_pair(std::string(fname),
+			std::make_pair(abfd, symtab)));
+		assert(emplit.second);
+		return emplit.first;
+}
 
 std::string addr2line (const size_t addr)
 {
@@ -194,28 +215,11 @@ std::string addr2line (const size_t addr)
 	bfd* abfd;
 	asymbol** symtab;
 	auto f_it = open_files.find(std::string(info.dli_fname));
-	if (f_it == open_files.end()) { // file not opened yet
+	if (f_it == open_files.end()) f_it = open_objfile(info.dli_fname);
+	assert(f_it != open_files.end());
 
-		abfd = bfd_openr (info.dli_fname, NULL);
-		assert(abfd != NULL);
-
-		abfd->flags |= BFD_DECOMPRESS;
-		// this call is required (sets format flags on the file handle)
-		// even though we can already be pretty sure the object is of this format
-		if (!bfd_check_format(abfd, bfd_object)) {
-		  assert(false);
-		  return "";
-		}
-
-		symtab = slurp_symtab (abfd);
-		assert(symtab != NULL);
-
-		open_files.insert(std::make_pair(std::string(info.dli_fname),
-			std::make_pair(abfd, symtab)));
-	} else { // file already open
-		abfd = f_it->second.first;
-		symtab = f_it->second.second;
-	}
+	abfd = f_it->second.first;
+	symtab = f_it->second.second;
 
 	bfd_vma file_addr = (bfd_vma) (addr - (size_t) info.dli_fbase);
 
@@ -243,18 +247,42 @@ void addr2line_cache_cleanup() {
 
 // find the in-mem boundaries of the binary containing the given address
 void find_obj_bounds (const void* addr, size_t& start, size_t& end) {
-		assert(addr);
-		Dl_info info;
-		dladdr(addr, &info);
-		start = (size_t) info.dli_fbase;
-		bfd* abfd = bfd_openr(info.dli_fname, NULL);
-		abfd->flags |= BFD_DECOMPRESS;
-		if (!bfd_check_format(abfd, bfd_object)) assert (false);
-		end = start +
-			(size_t) bfd_get_size(abfd);
-		bfd_close(abfd);
+	assert(addr);
+	Dl_info info;
+	int e = dladdr(addr, &info);
+	assert(e != 0);
+	start = (size_t) info.dli_fbase;
+	bfd* abfd = bfd_openr(info.dli_fname, NULL);
+	abfd->flags |= BFD_DECOMPRESS;
+	// can't assert directly on the condition because 
+	// the function initializes necessary flags
+	if (!bfd_check_format(abfd, bfd_object)) assert (false);
+	end = start +
+		(size_t) bfd_get_size(abfd);
+	bfd_close(abfd);
 }
 
+// like dlsym, but searches .symtab instead of .dynsym
+void* statsym(const char* name, void* hint) {
+	assert(name && hint);
+	Dl_info info;
+	int e = dladdr(hint, &info);
+	assert(e != 0);
+	auto f_it = open_files.find(std::string(info.dli_fname));
+	if (f_it == open_files.end()) f_it = open_objfile(info.dli_fname);
+	assert(f_it != open_files.end());
+
+	asymbol** symtab = f_it->second.second;
+	size_t offset = 0;
+	for (int a = 0; symtab[a] != NULL; ++a) {
+		if (strcmp(name, symtab[a]->name) == 0) {
+			offset = (size_t) symtab[a]->value;
+			break;
+		}
+	}
+	if (offset == 0) return NULL;
+	else return (void*) (offset + (size_t) info.dli_fbase);
+}
 
 } // namespace lktrace
 

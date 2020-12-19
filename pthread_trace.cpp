@@ -5,6 +5,7 @@
 #include <dlfcn.h>
 #include <execinfo.h>
 #include <iostream>
+#include <semaphore.h>
 #include "tracer.h"
 
 #define NEW_GLIBC_VERSTR "GLIBC_2.3.2" 
@@ -16,24 +17,12 @@
 	static const real_fn_t REAL_FN = (real_fn_t) dlvsym(RTLD_NEXT, #name, verstr); \
 	assert(REAL_FN != NULL) // semicolon absence intentional
 
+#define PTHR_FN
 
-//#define LKTRACE_DEBUG 1
 lktrace::tracer the_tracer;
+thread_local bool recurse_guard = false; // prevents infinite recursion into logging functions
+// true = call is recursive
 
-// trying to trace locks inside the allocator causes infinite recursion leading to deadlock
-// this function detects that, with the help of lookups in the tracer ctor
-// only checks the caller two frames up
-//
-// this has to be checked up here rather than in tracer becuase dlsym allocates stuff
-bool caller_is_allocator() {
-	// never trace if the tracer ctor is not complete yet
-	if (the_tracer.alloc_start == 0) return true;
-	
-	void* buf[3];
-	backtrace(buf, 3);
-	return ((size_t) buf[2] > the_tracer.alloc_start &&
-			(size_t) buf[2] < the_tracer.alloc_end);
-}
 
 // the __ methods are the actual function that the normal ones alias
 // handy for us, since a dlsym call inside the memory allocator causes infinite recursion
@@ -44,17 +33,20 @@ bool caller_is_allocator() {
 // hopefully there's not a memory allocator out there that uses condvars
 extern "C" int __pthread_mutex_lock(pthread_mutex_t*);
 int pthread_mutex_lock(pthread_mutex_t* lk) {
-	
-	// log arrival at lock
-	if (!caller_is_allocator())
+	// log arrival at lock 
+	bool local_guard = recurse_guard;
+	if (!local_guard) {
+		recurse_guard = true;
 		the_tracer.add_event(lktrace::event::LOCK_REQ, (size_t) lk);
+	}
 	// run pthreads function
-//	GET_REAL_FN(pthread_mutex_lock, int, pthread_mutex_t*);
+//	GET_REAL_FN(pthread_mutex_lock, OLD_GLIBC_VERSTR, int, pthread_mutex_t*);
 //	int e = REAL_FN(lk);
 	int e = __pthread_mutex_lock(lk);
-	if (!caller_is_allocator()) {
+	if (!local_guard) {
 		if (e == 0) the_tracer.add_event(lktrace::event::LOCK_ACQ, (size_t) lk);
 		else the_tracer.add_event(lktrace::event::LOCK_ERR, (size_t) lk);
+		recurse_guard = false;
 	}
 	return e;
 }
@@ -62,43 +54,66 @@ int pthread_mutex_lock(pthread_mutex_t* lk) {
 extern "C" int __pthread_mutex_unlock(pthread_mutex_t*);
 int pthread_mutex_unlock(pthread_mutex_t* lk) {
 	// log lock release
-	if(!caller_is_allocator())
+	bool local_guard = recurse_guard;
+	if(!local_guard) {
+		recurse_guard = true;
 		the_tracer.add_event(lktrace::event::LOCK_REL, (size_t) lk);
+	}
 	// run pthreads function
-//	GET_REAL_FN(pthread_mutex_unlock, int, pthread_mutex_t*);
-//	return REAL_FN(lk);
-	return __pthread_mutex_unlock(lk);
+//	GET_REAL_FN(pthread_mutex_unlock, OLD_GLIBC_VERSTR, int, pthread_mutex_t*);
+//	int e = REAL_FN(lk);
+	int e = __pthread_mutex_unlock(lk);
+	if (!local_guard) recurse_guard = false;
+	return e;
 }
 
 int pthread_cond_wait(pthread_cond_t* cond, pthread_mutex_t* lk) {
 	// log arrival at wait
-	if (!caller_is_allocator())
-		the_tracer.add_event(lktrace::event::COND_WAIT, (size_t) cond); 
+	// waiting releases the lock
+	bool local_guard = recurse_guard;
+	if (!local_guard) {
+		recurse_guard = true;
+		the_tracer.add_event(lktrace::event::COND_WAIT, (size_t) cond);
+		the_tracer.add_event(lktrace::event::LOCK_REL, (size_t) lk);
+	}
 	// run pthreads function
 	GET_REAL_FN(pthread_cond_wait, NEW_GLIBC_VERSTR, 
 			int, pthread_cond_t*, pthread_mutex_t*);
 	int e = REAL_FN(cond, lk);
-	if (!caller_is_allocator()) {
-		if (e == 0) the_tracer.add_event(lktrace::event::COND_LEAVE, (size_t) cond);
-		else the_tracer.add_event(lktrace::event::COND_ERR, (size_t) cond);
+	if (!local_guard) {
+		if (e == 0) {
+			the_tracer.add_event(lktrace::event::COND_LEAVE, (size_t) cond);
+			the_tracer.add_event(lktrace::event::LOCK_ACQ, (size_t) lk);
+		} else the_tracer.add_event(lktrace::event::COND_ERR, (size_t) cond);
+		recurse_guard = false;
 	}
 	return e;
 }
 
 int pthread_cond_signal(pthread_cond_t* cond) {
 	// log cond signal
-	if (!caller_is_allocator())
+	bool local_guard = recurse_guard;
+	if (!local_guard) {
+		recurse_guard = true;
 		the_tracer.add_event(lktrace::event::COND_SIGNAL, (size_t) cond);
+	}
 	// run pthreads function
 	GET_REAL_FN(pthread_cond_signal, NEW_GLIBC_VERSTR, int, pthread_cond_t*);
-	return REAL_FN(cond);
+	int e = REAL_FN(cond);
+	if (!local_guard) recurse_guard = false;
+	return e;
 }
 
 int pthread_cond_broadcast(pthread_cond_t* cond) {
-	if (!caller_is_allocator())
+	bool local_guard = recurse_guard;
+	if (!local_guard) {
+		recurse_guard = true;
 		the_tracer.add_event(lktrace::event::COND_BRDCST, (size_t) cond);
+	}
 	GET_REAL_FN(pthread_cond_broadcast, NEW_GLIBC_VERSTR, int, pthread_cond_t*);
-	return REAL_FN(cond);
+	int e = REAL_FN(cond);
+	if (!local_guard) recurse_guard = false;
+	return e;
 }
 
 // wraps a thread hook (entry point and args) so that we can pass it through
@@ -121,17 +136,20 @@ pthr_hook::pthr_hook(void* (*h)(void*), void* a, void*c):
 void* inject_thread_registration (void* real) {
 	// get a local copy of real thread hook/args
 	// then delete the dynalloc'd copy
+	recurse_guard = true;	
 	pthr_hook* real_dyn = (pthr_hook*) real;
 	pthr_hook real_thread (real_dyn);
 	delete real_dyn;
 	// register thread
 	the_tracer.add_this_thread((size_t) real_thread.hook, real_thread.caller);
+	recurse_guard = false;
 	// use unified return point
 	pthread_exit(real_thread.hook(real_thread.arg));
 }
 
 int pthread_create (pthread_t* thread, const pthread_attr_t *attr, 
 		void *(*hook)(void*), void* arg) {
+	recurse_guard = true;
 	GET_REAL_FN(pthread_create, OLD_GLIBC_VERSTR, int, pthread_t*,
 			const pthread_attr_t*, void* (*) (void*), void*);
 	// we inject some tracking code before starting the real thread
@@ -139,11 +157,14 @@ int pthread_create (pthread_t* thread, const pthread_attr_t *attr,
 	void* buf[2];
 	backtrace(buf, 2);
 	pthr_hook* real_thread = new pthr_hook(hook, arg, buf[1]);
-	return REAL_FN(thread, attr, inject_thread_registration,
+	int e = REAL_FN(thread, attr, inject_thread_registration,
 			(void*) real_thread);
+	recurse_guard = false;
+	return e;
 }
 
 void pthread_exit (void* rtn) {
+	recurse_guard = true;
 	the_tracer.sever_this_thread();
 	GET_REAL_FN(pthread_exit, OLD_GLIBC_VERSTR, void, void*);
 	while (1) REAL_FN(rtn); // loop is there to convince compiler that this does not return

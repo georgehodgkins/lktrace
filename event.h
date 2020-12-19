@@ -3,16 +3,21 @@
 #include <execinfo.h>
 #include <cassert>
 #include <string>
+#include <cctype>
 
 namespace lktrace {
 
 // these are 16-bit and count down from the top so that
 // the weird pattern matching method we use works properly
 // see find_patterns() in parser.cpp
-enum class event : char16_t {LOCK_REQ = 0xFFFF, LOCK_ACQ = 0xFFFE, LOCK_REL = 0xFFFD,
-	LOCK_ERR = 0xFFFC, COND_WAIT = 0xFFFB, COND_LEAVE = 0xFFFA, COND_SIGNAL = 0xFFF9,
-	COND_BRDCST = 0xFFF8, COND_ERR = 0xFFF7, THRD_SPAWN = 0xFFF6, THRD_EXIT = 0xFFF5};
-
+// TODO: make this a real class instead
+enum class event : uint16_t {
+	LOCK_REQ = 0xFFFF, LOCK_ACQ = 0xFFFE, LOCK_REL = 0xFFFD,
+	LOCK_ERR = 0xFFFC, LOCK_EVENT_TYPE = 0xF000,
+	COND_WAIT = 0xEFFF, COND_LEAVE = 0xEFFE, COND_SIGNAL = 0xEFFD,
+	COND_BRDCST = 0xEFFC, COND_ERR = 0xEFFB, COND_EVENT_TYPE = 0xE000,
+       	THRD_SPAWN = 0xDFF6, THRD_EXIT = 0xDFF5, THRD_EVENT_TYPE = 0xD000,
+	NULL_EVENT = 0x0};
 
 inline event ev_str_to_code(std::string str) {
 	event ev;
@@ -50,7 +55,8 @@ inline event ev_str_to_code(std::string str) {
 	return ev;
 }
 
-inline std::string ev_to_descr(event ev) {
+inline std::string ev_to_descr(event ev, bool lower = false) {
+	assert(ev != event::NULL_EVENT);
 	std::string str;
 	switch (ev) {
 	case (event::THRD_SPAWN): str = "Spawned thread"; break;
@@ -66,10 +72,13 @@ inline std::string ev_to_descr(event ev) {
 	case (event::COND_ERR): str = "Error waiting on condvar"; break;
 	}
 
+	if (lower) str[0] = std::tolower(str[0]);	
+
 	return str;
 }
 
 inline std::string ev_code_to_str (event ev) {
+	assert(ev != event::NULL_EVENT);
 	switch (ev) {
 		case (event::LOCK_REQ):
 			return "LQ";
@@ -94,7 +103,7 @@ inline std::string ev_code_to_str (event ev) {
 		case (event::THRD_EXIT):
 			return "TE";
 		default:
-			return "<bad>";
+			assert(false && "Unrecognized event!");
 	}
 }
 

@@ -20,6 +20,7 @@
 #include <link.h> // dl_iterate_phdr() linker symbol lookup
 #include <execinfo.h> // backtrace()
 #include <unistd.h>  // free()
+#include <pthread.h> // pthread_self()
 
 // this is what happens when you overuse templates
 //
@@ -55,6 +56,8 @@ struct hist_entry {
 	// start and end address of our own code (for stack tracing) 
 	static size_t start_addr;
 	static size_t end_addr; // technically the start addr of the next .so
+	static size_t alloc_start;
+	static size_t alloc_end;
 };
 
 // history type (concurrent hash map from tids to vectors of hist_entry)
@@ -76,17 +79,13 @@ class tracer {
 	// register thread with libcds tracking
 	static void cds_register_thread();
 
-
+	// indicator that constructor has completed
+	// because sometimes functions in the contructor phase use locks
+	bool init_guard;
 	
-
 	public:
 	tracer();
 	~tracer();
-
-	// we need to avoid tracing locks used by the allocator
-	// (doing so causes immediate deadlock bcs add_event allocates an entry)
-	size_t alloc_start;
-	size_t alloc_end;
 
 	// add a new thread (new hash map entry) with tid of current
 	void add_this_thread(size_t hook, void* caller, bool mt = true);
