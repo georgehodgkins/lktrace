@@ -333,7 +333,6 @@ inline char16_t parser::get_caller_id (size_t caller) {
 	return c_it->second;
 }
 
-
 void parser::find_deps (size_t min_depth) {
 	size_t holder_tid = 0;
 	size_t init_time = 0;
@@ -342,6 +341,9 @@ void parser::find_deps (size_t min_depth) {
 	auto next = global_hist.end();
 	std::u16string pattern;
 	std::u16string callers;
+	// records timestamp of next lock release for a tid
+	// used to avoid recording inner patterns multiple times
+	std::unordered_map<size_t, size_t> next_release;
 
 	// walk global hist, uninterleaving and finding per-thread patterns
 	for (auto Rit = global_hist.begin(); Rit != global_hist.end(); ++Rit ) {
@@ -359,7 +361,7 @@ void parser::find_deps (size_t min_depth) {
 			++depth;
 			pattern += (char16_t) L.ev;
 			callers += get_caller_id(L.caller);
-		} else if (R.tid == holder_tid) {
+		} else if (R.tid == holder_tid) { // relevant event
 			if (!skip_wait_unlock) {
 				++depth;
 				pattern += (char16_t) L.ev;
@@ -368,10 +370,13 @@ void parser::find_deps (size_t min_depth) {
 				assert(pattern.back() == (char16_t) event::COND_LEAVE);
 				skip_wait_unlock = false;
 			}
-
-		} else if (next == global_hist.end())
-			next = Rit;
-
+		} else if (next == global_hist.end()) { 
+			// record the next beginning of an interleaved pattern
+			// if it is the outermost in its thread, and one is not already recorded
+			auto f_it = next_release.find(R.tid);
+			if (f_it != next_release.end() && L.ts > f_it->second)
+				next = Rit;
+		}
 		break;
 	case (event::LOCK_REL):
 		if (R.tid == holder_tid) {
@@ -384,13 +389,16 @@ void parser::find_deps (size_t min_depth) {
 
 		if (depth == 1) { // end of pattern, commit and reset
 			assert(pattern.size() == callers.size());
-			//if (pattern.size()/2 >= min_depth) {
-			if (true) {
+			if (pattern.size()/2 >= min_depth) {
 				pattern += callers;
 				pattern_data& pdat = patterns[pattern];
 				pdat.instance(holder_tid);
 				pdat.total_time += (L.ts - init_time);
 			}
+			// do not record any more patterns for this tid
+			// with a timestamp lower than this one
+			next_release[holder_tid] = L.ts;
+
 			// reset info
 			pattern.clear();
 			callers.clear();
