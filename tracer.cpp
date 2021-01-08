@@ -24,6 +24,21 @@ tracer::tracer() :
 	histories(MAX_THRD_COUNT, 1), 
 	init_time(chrono::steady_clock::now()),
 	init_guard(false) {
+		// register this tracer instance with the master
+		instance_sem = sem_open("/lktraceinst", 0);
+		assert(instance_sem != SEM_FAILED);
+		sem_post(instance_sem);
+		// get tracer options from shared mem
+		int ctl_fd = shm_open("/lktracectl", O_RDONLY, S_IRUSR);
+		assert(ctl_fd != -1);
+		struct stat info;
+		int e = fstat(ctl_fd, &info);
+		assert(e == 0);
+		void* ctl_v = mmap(NULL, (size_t) info.st_size, PROT_READ, MAP_SHARED, ctl_fd, 0);
+	       	assert(ctl_v != MAP_FAILED);
+		ctl = (tracer_ctl*) ctl_v;
+		e = close(ctl_fd); // don't need fd after mapping
+		assert(e == 0);
 		// set up cds thread tracking
 		cds::Initialize();
 		// find beginning and end of our own .so
@@ -32,9 +47,11 @@ tracer::tracer() :
 		// find beginning and end of allocator .so
 		find_obj_bounds((void*) &malloc,
 				hist_entry::alloc_start, hist_entry::alloc_end);
+		// set trace skip
+		hist_entry::trace_skip = ctl->trace_skip;
 		// register master thread
 		void* buf[2];
-		int e = backtrace(buf, 2);
+		e = backtrace(buf, 2);
 		assert(e == 2);
 		add_this_thread(0, buf[1],  false);
 		// this assignment must be deferred to here
@@ -108,10 +125,15 @@ tracer::~tracer () { // purpose of this destructor is to write out our results
 	outfile.close();
 	} // if (multithreaded)
 
-
 	// clean up cds
 	cds::threading::Manager::detachThread();
 	cds::Terminate();
+
+	// deregister tracer instance with master
+	int e = sem_trywait(instance_sem);
+	assert(e != EAGAIN);
+	assert(e == 0);
+	sem_close(instance_sem);
 }
 
 void tracer::add_this_thread(size_t hook, void* caller, bool mt) {
@@ -161,20 +183,15 @@ void tracer::add_event(event e, size_t obj_addr) {
 /*-----------------class hist_entry----------------------------*/
 
 
-// define static vars (bounds of our own code in memory)
+// define static vars
 size_t hist_entry::start_addr = 0;
 size_t hist_entry::end_addr = 0;
 size_t hist_entry::alloc_start = 0;
 size_t hist_entry::alloc_end = 0;
+unsigned int hist_entry::trace_skip = 0;
 
 // how many frames up to look for calling code
 #define TRACE_DEPTH 8
-// frames to skip after reaching code outside this library
-// 
-// used to trace programs which wrap their calls to the traced library 
-// in their own lock(), unlock(), etc
-// TODO: this should be a runtime parameter once those are a thing
-#define TRACE_SKIP 0
 
 hist_entry::hist_entry(event e, size_t obj_addr) : 
 	ts(chrono::steady_clock::now()), ev(e), addr(obj_addr) {
@@ -190,7 +207,7 @@ hist_entry::hist_entry(event e, size_t obj_addr) :
 	while (a < v && start_addr < (size_t) buf[a] &&
 		end_addr > (size_t) buf[a]) ++a;
 	// skip requested amount of frames
-	a += TRACE_SKIP;
+	a += trace_skip;
 	if (a >= v) a = v-1;
 	caller = buf[a];
 
@@ -205,3 +222,4 @@ hist_entry::hist_entry(event e, size_t obj_addr, void* c) :
 	ts(chrono::steady_clock::now()), ev(e), caller(c), addr(obj_addr) {}
 
 } // namespace lktrace
+

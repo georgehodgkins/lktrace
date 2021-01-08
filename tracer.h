@@ -22,6 +22,13 @@
 #include <unistd.h>  // free()
 #include <pthread.h> // pthread_self()
 
+#include <semaphore.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <signal.h>
+
 // this is what happens when you overuse templates
 //
 // also for some reason I had to include an internal
@@ -34,8 +41,6 @@
 #include <cds/container/michael_kvlist_nogc.h>
 
 #include "event.h"
-
-
 
 namespace lktrace {
 
@@ -53,11 +58,22 @@ struct hist_entry {
 	// pass in caller to ctor
 	hist_entry(event, size_t, void*);
 
+	friend class tracer;
+	protected: // all of these values are set by the tracer ctor
 	// start and end address of our own code (for stack tracing) 
 	static size_t start_addr;
 	static size_t end_addr; // technically the start addr of the next .so
+	// start and end address of the allocator
 	static size_t alloc_start;
 	static size_t alloc_end;
+	// number of frames to skip after exiting our own code in a stack trace
+	static unsigned int trace_skip;
+};
+
+// an instance of this is placed in shared memory and used to provide
+// setup information to all constructed tracers
+struct tracer_ctl {
+	unsigned int trace_skip;
 };
 
 // history type (concurrent hash map from tids to vectors of hist_entry)
@@ -81,8 +97,15 @@ class tracer {
 
 	// indicator that constructor has completed
 	// because sometimes functions in the contructor phase use locks
+	// particularly, jemalloc does
 	bool init_guard;
-	
+
+	// address of read-only control object in shared mem
+	tracer_ctl *ctl;
+
+	// address of instance semaphore (tells master when to terminate)
+	sem_t *instance_sem;
+
 	public:
 	tracer();
 	~tracer();
@@ -102,3 +125,4 @@ class tracer {
 
 
 } // namespace lktrace 
+
