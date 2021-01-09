@@ -73,10 +73,22 @@ struct hist_entry {
 	static unsigned int trace_skip;
 };
 
-// an instance of this is placed in shared memory and used to provide
-// setup information to all constructed tracers
-struct tracer_ctl {
-	unsigned int trace_skip;
+// this class encapsulates access to tracer options stored
+// in shared memory
+class tracer_ctl {
+	private:
+	unsigned tskip;
+	const char* prefix;
+	const char* wrdir;
+	const char* tdir;
+       	
+	public:
+	tracer_ctl();	
+
+	unsigned get_tskip() const {return tskip;}
+	std::string get_prefix() const {return std::string(prefix);}
+	const char* get_wrdir() const {return wrdir;}
+	const char* get_tdir() const {return tdir;}
 };
 
 // history type (concurrent hash map from tids to vectors of hist_entry)
@@ -84,7 +96,11 @@ struct tracer_ctl {
 using hist_map = cds::container::MichaelHashMap<cds::gc::nogc,
       cds::container::MichaelKVList<cds::gc::nogc, size_t, vector<hist_entry> > >;
 
-class tracer {
+class tracer {	
+	// indicator that constructor has completed
+	// because sometimes functions in the contructor phase use locks
+	// particularly, jemalloc does
+	bool init_guard;
 	
 	// per-thread event histories
 	hist_map histories;
@@ -98,13 +114,9 @@ class tracer {
 	// register thread with libcds tracking
 	static void cds_register_thread();
 
-	// indicator that constructor has completed
-	// because sometimes functions in the contructor phase use locks
-	// particularly, jemalloc does
-	bool init_guard;
 
 	// control structure
-	tracer_ctl ctl;
+	const tracer_ctl ctl;
 
 	// instance socket (liveness is used by master for instance counting)
 	int instance_sock;

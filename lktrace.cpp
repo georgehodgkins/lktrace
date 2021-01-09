@@ -2,7 +2,7 @@
 #include "getopt.h"
 
 // defined globally so we can access it in signal handler
-unsigned int instance_ctr = 0;
+int instance_ctr = 0;
 
 void sigchld_handler (int signum, siginfo_t *info, void*) {
 	assert(signum = SIGCHLD);
@@ -13,7 +13,7 @@ void sigchld_handler (int signum, siginfo_t *info, void*) {
 int main (int argc, char** argv) {
 	// initialize params
 	std::string prefix = "lktracedat";
-	unsigned int trace_skip = 0;
+	uint32_t trace_skip = 0;
 	
 	// setup options
 	enum OPT_ID: int {OPT_PREFIX = (int) 'f', OPT_FSKIP = (int) 'd'};
@@ -36,8 +36,6 @@ int main (int argc, char** argv) {
 			assert(false && "Default block in option parsing reached!");
 		}
 	}
-
-	prefix += '-';
 	
 	// attach SIGCHLD handler to keep instance counter accurate
 	struct sigaction handler;
@@ -58,17 +56,6 @@ int main (int argc, char** argv) {
 	sock_ev.data.fd = instance_sock;
 	e = epoll_ctl(sock_poll, EPOLL_CTL_ADD, instance_sock, &sock_ev);
 
-	// set up control structure in shared memory
-	int ctl_fd = shm_open("/lktracectl", O_CREAT | O_EXCL | O_RDWR, S_IWUSR | S_IRUSR);
-	assert(ctl_fd != -1);
-	e = ftruncate(ctl_fd, sizeof(lktrace::tracer_ctl)); // TODO: dynamic size
-	assert(e == 0);
-	void* ctl_v = mmap(NULL, sizeof(lktrace::tracer_ctl), PROT_READ | PROT_WRITE, MAP_SHARED, ctl_fd, 0);
-	assert(ctl_v != MAP_FAILED);
-	lktrace::tracer_ctl* ctl = new (ctl_v) lktrace::tracer_ctl;
-	ctl->trace_skip = trace_skip;
-	close(ctl_fd); // don't need this after mmap
-
 	// set up execution environment for target
 	char* so_path = realpath("pthread_trace.so", NULL);
 	assert(so_path != NULL);
@@ -76,14 +63,41 @@ int main (int argc, char** argv) {
 	assert(e == 0);
 	char* target_path = realpath(argv[optind], NULL);
 	assert(target_path != NULL);
-	char* last_sep = strrchr(target_path, '/');
-	assert(last_sep != NULL);
-	*last_sep = '\0';
+	char* targ_lsep = strrchr(target_path, '/');
+	assert(targ_lsep != NULL);
+	*targ_lsep = '\0';
 	e = chdir(target_path);
 	assert(e == 0);
-	*last_sep = '/';
+
+	// set up shm for control data
+	int ctl_fd = shm_open("/lktracectl", O_CREAT | O_EXCL | O_RDWR, S_IWUSR | S_IRUSR);
+	assert(ctl_fd != -1);
+	char* so_lsep = strrchr(so_path, '/');
+	assert(so_lsep != NULL);
+	*so_lsep = '\0';
+	size_t ctl_sz = sizeof(uint32_t) +
+		prefix.size() + 1 +
+		strlen(so_path) + 1 +
+		strlen(target_path) + 1;
+	e = ftruncate(ctl_fd, ctl_sz);
+	assert(e == 0);
+	void* ctl_v = mmap(NULL, ctl_sz, PROT_READ | PROT_WRITE, MAP_SHARED, ctl_fd, 0);
+	assert(ctl_v != MAP_FAILED);
+	close(ctl_fd); // don't need this after mmap
+	
+	// populate shm
+	uint32_t *num_pt = (uint32_t*) ctl_v;
+	*num_pt = trace_skip;
+	++num_pt;
+	char* str_pt = (char*) num_pt;
+	strcpy(str_pt, prefix.c_str());
+	str_pt += (prefix.size() + 1);
+	strcpy(str_pt, so_path);
+	str_pt += (strlen(so_path) + 1);
+	strcpy(str_pt, target_path);
 
 	// fork off target executable
+	*targ_lsep = '/'; // fix target path
 	pid_t child = fork();
 	if (child == 0) {
 		execvp(target_path, &argv[optind+1]);
@@ -128,8 +142,6 @@ int main (int argc, char** argv) {
 	} while (instance_ctr > 0 || ev_count > 0);
 
 	// clean up IPC
-	e = munmap(ctl, sizeof(lktrace::tracer_ctl));
-	assert(e == 0);
 	e = close(sock_poll);
 	assert(e == 0);
 	e = close(instance_sock);

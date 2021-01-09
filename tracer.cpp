@@ -3,6 +3,40 @@
 
 namespace lktrace {
 
+/*---------------------------class tracer_ctl-------------------------*/
+tracer_ctl::tracer_ctl() {
+	// map options into RO shared mem
+	int ctl_fd = shm_open("/lktracectl", O_RDONLY, S_IRUSR);
+	assert(ctl_fd != -1);
+	struct stat info;
+	int e = fstat(ctl_fd, &info);
+	assert(e == 0);
+	void* ctl_v = mmap(NULL, (size_t) info.st_size, PROT_READ, MAP_SHARED, ctl_fd, 0);
+	assert(ctl_v != MAP_FAILED);
+	e = close(ctl_fd); // don't need fd after mapping
+	assert(e == 0);
+
+	// get options from shared mem
+	// layout should match the data members in tracer_ctl
+	unsigned *num_pt = (unsigned*) ctl_v;
+	tskip = *num_pt;
+	++num_pt;
+	const char *str_pt = (const char*) num_pt;
+	prefix = str_pt;
+	while (*str_pt != '\0') ++str_pt;
+	++str_pt;
+	wrdir = str_pt;
+	while (*str_pt != '\0') ++str_pt;
+	++str_pt;
+	tdir = str_pt;
+	// sanity check
+	assert((sizeof(unsigned) +
+		strlen(prefix) + 1 +
+		strlen(wrdir) + 1 +
+		strlen(tdir) + 1) ==
+			(unsigned) info.st_size);
+}
+
 /*---------------------------class tracer-----------------------------*/
 	
 size_t tracer::get_tid () { // an alias for pthread_self, cast to size_t
@@ -20,28 +54,17 @@ int phdr_callback (dl_phdr_info *info, size_t sz, void* data) {
 	return 0;
 }
 	
-tracer::tracer() : 
+tracer::tracer() :
+       	init_guard(false),	
 	histories(MAX_THRD_COUNT, 1), 
 	init_time(chrono::steady_clock::now()),
-	init_guard(false) {
+	ctl() {
 		// register this tracer instance with the master
 		instance_sock = socket(AF_UNIX, SOCK_STREAM, 0);
 		sockaddr_un addr;
 		addr.sun_family = AF_UNIX;
 		strcpy(addr.sun_path, "/tmp/lktracesock");
 		int e = connect(instance_sock, (sockaddr*) &addr, sizeof(sockaddr_un));
-		assert(e == 0);
-
-		// get tracer options from shared mem
-		int ctl_fd = shm_open("/lktracectl", O_RDONLY, S_IRUSR);
-		assert(ctl_fd != -1);
-		struct stat info;
-		e = fstat(ctl_fd, &info);
-		assert(e == 0);
-		void* ctl_v = mmap(NULL, (size_t) info.st_size, PROT_READ, MAP_SHARED, ctl_fd, 0);
-	       	assert(ctl_v != MAP_FAILED);
-		ctl = (tracer_ctl*) ctl_v;
-		e = close(ctl_fd); // don't need fd after mapping
 		assert(e == 0);
 		
 		// set up cds thread tracking
@@ -53,7 +76,7 @@ tracer::tracer() :
 		find_obj_bounds((void*) &malloc,
 				hist_entry::alloc_start, hist_entry::alloc_end);
 		// set trace skip
-		hist_entry::trace_skip = ctl->trace_skip;
+		hist_entry::trace_skip = ctl.get_tskip();
 		// register master thread
 		void* buf[2];
 		e = backtrace(buf, 2);
@@ -81,17 +104,27 @@ tracer::~tracer () { // purpose of this destructor is to write out our results
 	set_terminate(&ahnold);
 	// add thread exit event for master, but don't deregister w/cds
 	sever_this_thread(false);
+	// no recursion in here pls
+	init_guard = false;
 
 	if (multithreaded) { // don't write anything out if there was never >1 thread
 
 	// when we find a dscriptor string for an address using addr2line, we store it here
 	std::unordered_map<size_t, std::string> caller_name_cache;
 
-	string fname = "lktracedat-";
+	// write files in directory where lktrace was called
+	int e = chdir(ctl.get_wrdir());
+	assert(e == 0);
+
+	string fname = ctl.get_prefix();
+	fname += '-';
 	fname += to_string(getpid());
 
 	ofstream outfile (fname);
 	assert(outfile.is_open());
+
+	e = chdir(ctl.get_tdir()); // switch back to target dir so addr2line works correctly
+	assert(e == 0);
 
 	// we write out each history individually
 	for (auto hist_it = histories.begin(); hist_it != histories.end(); ++hist_it) {
@@ -142,6 +175,7 @@ tracer::~tracer () { // purpose of this destructor is to write out our results
 
 	addr2line_cache_cleanup(); // close opened object files
 	outfile.close();
+
 	} // if (multithreaded)
 
 	// clean up cds
