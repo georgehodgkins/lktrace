@@ -2,7 +2,7 @@ Lktrace: preloader-based lock tracing tool
 Currently only targets Pthreads but it would be easy to add other libraries
 Written in C++
 
-Depends: libbfd, libdl, libpthread, libcds
+Depends: libbfd, libdl, libpthread, librt, libcds
 All of these except for libcds are probably already present on a standard Linux system. 
 
 This program is free software: you can redistribute it and/or modify
@@ -18,23 +18,20 @@ This program is free software: you can redistribute it and/or modify
     You should have received a copy of the GNU General Public License
     along with this program (./LICENSE).  If not, see <https://www.gnu.org/licenses/>.
 
-
-
 Two components:
 - tracer: attaches to program, logs lock & other sync variable accesses, and writes it out on exit
 - parser: gives you useful data from trace
 
-The tracer currently works pretty well, but the parser is still rudimentary.
+Both tools can do cool stuff, but documentation is basically nonexistent and error handling is mostly just assertions at the moment. Bug reports/feature requests are appreciated.
 
 Compilation instructions:
 - run 'make'
 
 How to use:
-1) Run your target program with pthread_trace.so preloaded, as so:
-	LD_PRELOAD=$(realpath /path/to/pthread_trace.so) ./my_program --my-args
+1) Run your target program with lktrace:
+	./lktrace <lktrace options> my-program <my-program options>
 
-2) The tracer will generate a dump file named lktracedat-<PID> for every process descended from
-the original (incl. the original) that completes normally (i.e. no crashes or external termination). Support for tracing crashed programs is planned in future.
+2) The tracer will generate a dump file named lktracedat-<PID> (by default) for every process descended from the original (incl. the original) that completes normally (i.e. no crashes or external termination). Support for tracing crashed programs is planned in future.
 
 3) Use the lkdump program to examine the results. Currently supports the following commands,
 combined with a single dump file as an argument (to the entire program):
@@ -47,5 +44,5 @@ to a file rather than stdout with the -o flag.
 Notes:
 - If, for some reason, you want to run Valgrind on a program with the tracer attached,
 	you should pass --suppressions=/path/to/lktrace.supp to valgrind, to suppress
-	reporting of some leaks in PThreads that are normally suppressed by Valgrind, but
+	reporting of some leaks in Pthreads that are normally suppressed by Valgrind, but
 	are not suppressed when Pthreads is accessed through the tracer.
