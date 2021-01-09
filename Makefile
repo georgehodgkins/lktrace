@@ -4,11 +4,11 @@ DEPS = -lcds -ldl -lbfd -lrt -pthread
 all: pthread_trace.so lkdump lktrace
 	rm -f core
 
-pthread_trace.so: pthread_trace.cpp tracer.o addr2line.h
+pthread_trace.so: tracer.o addr2line.h tracer.cpp
 	g++ $(CFLAGS) -shared -o $@ pthread_trace.cpp -Wl,--whole-archive \
 	      	tracer.o -L. -pthread -Wl,--no-whole-archive $(DEPS)
 
-lktrace: pthread_trace.so tracer.o lktrace.cpp
+lktrace: pthread_trace.so lktrace.cpp
 	g++ $(CFLAGS) -o $@ lktrace.cpp tracer.o $(DEPS)
 
 lkdump: lkdump.cpp parser.o

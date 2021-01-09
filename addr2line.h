@@ -210,11 +210,13 @@ std::string addr2line (const size_t addr)
 {
 	Dl_info info;
 	int e = dladdr((void*) addr, &info);
-	assert(e != 0);
+	if (e == 0) return "??";
+	if (info.dli_fname == NULL) return "?!";
 	
 	bfd* abfd;
 	asymbol** symtab;
-	auto f_it = open_files.find(std::string(info.dli_fname));
+	std::string n = info.dli_fname;
+	auto f_it = open_files.find(n);
 	if (f_it == open_files.end()) f_it = open_objfile(info.dli_fname);
 	assert(f_it != open_files.end());
 

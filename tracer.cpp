@@ -25,20 +25,25 @@ tracer::tracer() :
 	init_time(chrono::steady_clock::now()),
 	init_guard(false) {
 		// register this tracer instance with the master
-		instance_sem = sem_open("/lktraceinst", 0);
-		assert(instance_sem != SEM_FAILED);
-		sem_post(instance_sem);
+		instance_sock = socket(AF_UNIX, SOCK_STREAM, 0);
+		sockaddr_un addr;
+		addr.sun_family = AF_UNIX;
+		strcpy(addr.sun_path, "/tmp/lktracesock");
+		int e = connect(instance_sock, (sockaddr*) &addr, sizeof(sockaddr_un));
+		assert(e == 0);
+
 		// get tracer options from shared mem
 		int ctl_fd = shm_open("/lktracectl", O_RDONLY, S_IRUSR);
 		assert(ctl_fd != -1);
 		struct stat info;
-		int e = fstat(ctl_fd, &info);
+		e = fstat(ctl_fd, &info);
 		assert(e == 0);
 		void* ctl_v = mmap(NULL, (size_t) info.st_size, PROT_READ, MAP_SHARED, ctl_fd, 0);
 	       	assert(ctl_v != MAP_FAILED);
 		ctl = (tracer_ctl*) ctl_v;
 		e = close(ctl_fd); // don't need fd after mapping
 		assert(e == 0);
+		
 		// set up cds thread tracking
 		cds::Initialize();
 		// find beginning and end of our own .so
@@ -59,7 +64,21 @@ tracer::tracer() :
 		init_guard = true;
 }
 
+// dump backtrace before termination
+// (catch exception throws in multi-process programs)
+void ahnold () {
+	void* buf[15];
+	int ul = backtrace(buf, 15);
+	for (int i = 0; i < ul; ++i) 
+		std::cerr << std::hex << (size_t) buf[i] << ": " << addr2line((size_t) buf[i]) << '\n';
+	if (ul == 15)
+		std::cerr << "<more frames may exist>";
+	std::abort();
+}
+
 tracer::~tracer () { // purpose of this destructor is to write out our results
+	// register C++ termination handler
+	set_terminate(&ahnold);
 	// add thread exit event for master, but don't deregister w/cds
 	sever_this_thread(false);
 
@@ -130,10 +149,7 @@ tracer::~tracer () { // purpose of this destructor is to write out our results
 	cds::Terminate();
 
 	// deregister tracer instance with master
-	int e = sem_trywait(instance_sem);
-	assert(e != EAGAIN);
-	assert(e == 0);
-	sem_close(instance_sem);
+	close(instance_sock);
 }
 
 void tracer::add_this_thread(size_t hook, void* caller, bool mt) {

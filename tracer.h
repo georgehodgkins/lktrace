@@ -7,6 +7,7 @@
 #include <chrono> // timestamps
 #include <string> 
 #include <fstream>
+#include <iostream> // debugging output
 
 #include <cstdlib> // free()
 #include <cassert> 
@@ -22,12 +23,14 @@
 #include <unistd.h>  // free()
 #include <pthread.h> // pthread_self()
 
-#include <semaphore.h>
-#include <sys/mman.h>
+#include <sys/mman.h> // mmap()
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <sys/types.h>
-#include <signal.h>
+#include <signal.h> // signal handling
+#include <sys/socket.h> // sockets
+#include <sys/un.h> // unix sockets
+#include <sys/epoll.h> // polling sockets
 
 // this is what happens when you overuse templates
 //
@@ -100,11 +103,11 @@ class tracer {
 	// particularly, jemalloc does
 	bool init_guard;
 
-	// address of read-only control object in shared mem
-	tracer_ctl *ctl;
+	// control structure
+	tracer_ctl ctl;
 
-	// address of instance semaphore (tells master when to terminate)
-	sem_t *instance_sem;
+	// instance socket (liveness is used by master for instance counting)
+	int instance_sock;
 
 	public:
 	tracer();
