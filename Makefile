@@ -1,5 +1,5 @@
 CFLAGS = -g -O0 -Wall -Wextra -fPIC 
-DEPS = -lcds -ldl -lbfd -lrt -pthread
+DEPS = -lcds -ldl -lbfd -lrt -lncurses -pthread
 
 all: pthread_trace.so lkdump lktrace
 	rm -f core
@@ -12,10 +12,13 @@ lktrace: pthread_trace.so lktrace.cpp
 	g++ $(CFLAGS) -o $@ lktrace.cpp tracer.o $(DEPS)
 
 lkdump: lkdump.cpp parser.o
-	g++ $(CFLAGS) -o $@ $^
+	g++ $(CFLAGS) -o $@ $^ $(DEPS)
 
-%.o: %.cpp
+tracer.o: tracer.cpp
 	g++ $(CFLAGS) -c -o $@ $^ $(DEPS)
+
+parser.o: parser.cpp parser_viz.cpp
+	g++ $(CFLAGS) -c -o $@ parser.cpp $(DEPS)
 
 clean:
 	rm -f *.o *.so

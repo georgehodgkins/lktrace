@@ -66,6 +66,10 @@ struct pattern_data {
 	size_t wait_time;
 };
 
+namespace viz {
+	struct thrd_dat;
+}
+
 class parser {
 
 	// per-thread histories (key=tid)
@@ -86,10 +90,13 @@ class parser {
 	// key=tid
 	std::unordered_map<size_t, std::string> thrd_hooks;
 
+	friend class viz::thrd_dat;
+	protected:
 	// resolved names of caller addresses
 	// key=in-memory addr
 	std::unordered_map<size_t, std::string> caller_names;
 
+	private:
 	// corresponding object addrs for caller addresses
 	std::unordered_map<size_t, size_t> caller_xref;
 	
@@ -114,6 +121,7 @@ class parser {
 
 	void find_patterns();
 	void find_deps(size_t);
+	int viz ();
 };
 
 } // namespace lktrace

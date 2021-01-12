@@ -451,3 +451,5 @@ void parser::find_deps (size_t min_depth) {
 
 } // namespace lktrace
 
+#include "parser_viz.cpp"
+
