@@ -118,7 +118,7 @@ class tracer {
 	// control structure
 	const tracer_ctl ctl;
 
-	// instance socket (liveness is used by master for instance counting)
+	// instance socket fd (liveness is used by master for instance counting)
 	int instance_sock;
 
 	public:

@@ -148,7 +148,7 @@ tracer::~tracer () { // purpose of this destructor is to write out our results
 		outfile << ":0x" << hex << tid << ":0x" << hist.front().addr << "]\n";
 		for (hist_entry& entry : hist) {
 			// write timestamp
-			outfile << dec << (entry.ts - init_time).count() << ':';
+			outfile << dec << std::chrono::nanoseconds(entry.ts - init_time).count() << ':';
 			// write event code
 			outfile << ev_code_to_str(entry.ev);
 			// write object & caller addrs

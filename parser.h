@@ -8,6 +8,7 @@
 #include <functional>
 
 #include <cassert>
+#include <cmath>
 
 #include "event.h"
 #include "enum_ops.h"
@@ -86,12 +87,12 @@ class parser {
 	// globally ordered history
 	std::vector<log_entry_ref> global_hist;
 
+	friend class viz::thrd_dat;
+	protected:
 	// symbol names of thread hooks (or filenames if symbol name was not found)
 	// key=tid
 	std::unordered_map<size_t, std::string> thrd_hooks;
 
-	friend class viz::thrd_dat;
-	protected:
 	// resolved names of caller addresses
 	// key=in-memory addr
 	std::unordered_map<size_t, std::string> caller_names;

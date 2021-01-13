@@ -4,28 +4,31 @@ namespace lktrace {
 
 namespace viz {
 
+#define QUIESC_COLOR 1
+#define BLOCKED_COLOR 2
+#define ACQ_COLOR 3
+
 struct thrd_dat {
 	static lktrace::parser* P;
-	static int y_scale;
-	static int y_root_assign;
+	const int TL_HEIGHT = 4;
 	
 	const size_t tid;
 	const std::vector<log_entry>* hist_p;
-	const int y_root;
 	size_t lbd;
 
 	thrd_dat(const std::pair<size_t, std::vector<log_entry> >& entry) : tid(entry.first),
-	hist_p(&P->thrd_hist.at(tid)), y_root(y_root_assign) {
-		y_root_assign += y_scale;
+	hist_p(&P->thrd_hist.at(tid)) {
 		lbd = 0;
 		//assert(hist_p == &(P->thrd_hist.at(tid)));
 	}
 
-	void draw_timeline (const size_t l_ts, const size_t width, const unsigned tick) {
+	void draw_timeline (const int y_root, const size_t l_ts, const int width,
+			const unsigned tick, const int select) {
+		
 		const std::vector<log_entry>& hist = *hist_p;	
 		const size_t r_ts = l_ts + tick*width;
 
-		// zone requested range
+		// get requested timestamp range
 		if (hist[lbd].ts < l_ts) {
 			do {++lbd;} while (hist[lbd].ts < l_ts);
 			--lbd;
@@ -33,58 +36,88 @@ struct thrd_dat {
 			while (hist[lbd].ts > l_ts && lbd > 0) --lbd;
 		}
 
-		size_t c = lbd;
+		// bold everything if this timeline is selected
+		if (select >= 0) attron(A_BOLD);
+
+		// clear old lines, draw bottom line
+		for (int x = 0; x < width; ++x) {
+			mvaddch(y_root+1, x, ' ');
+			mvaddch(y_root+2, x, ' ');
+			mvaddch(y_root+3, x, ACS_HLINE);
+		}
+
+		// draw thread label
+		mvprintw(y_root, 0, "[Thread %zx %s]", tid, P->thrd_hooks[tid].c_str());
+
+		// go through ticks
+		size_t c = lbd; // index to the next event to happen
 		int xput = 0;
 		for (size_t t = l_ts; t <= r_ts; t += tick, ++xput) {
-			// clear old lines
-			for (int x = 0; x < width; ++x) {
-				mvaddch(y_root+2, x, ' ');
-				if (y_scale > 4) mvaddch(y_root+3, x, ' ');
-			}
-			if (c+1 < hist.size() && t >= hist[c+1].ts) { // event transition
-				++c;
-				int p = 0;
-				if (y_scale > 4) {
-					mvprintw(y_root + 2, xput, "|@ %s", 
-						P->caller_names[hist[c].caller].c_str());
-					p = 1;
+			
+			if (c < hist.size() && t >= hist[c].ts) ++c;
+
+			// print event label if this is the selected tick
+			if (select == xput) {
+
+				// print caller name, event, & object addr
+				mvaddch(y_root + 2, xput, ACS_UARROW);
+				std::stringstream label;
+				label << P->caller_names[hist[c].caller] << ": " <<
+					ev_code_to_str(hist[c].ev) << " 0x" << std::hex << hist[c].obj; 
+				// flip label if it's too close to the edge
+				if (label.str().size() + 1 > width - xput) {
+					mvaddstr(y_root + 2, xput - label.str().size(), label.str().c_str());
+				} else {
+					mvaddstr(y_root + 2, xput + 1, label.str().c_str());
 				}
-				mvprintw(y_root + p+2, xput, "%s: %zx",
-					ev_code_to_str(hist[c].ev).c_str(),
-					hist[c].obj);
 			}
-			switch(hist[c].ev) {
+
+			// print timeline tick
+			if (c == 0) mvaddch(y_root + 1, xput, ' ');
+			else switch(hist[c-1].ev) {
 				// blocking
 				case (event::LOCK_REQ):
 				case (event::COND_WAIT):
-					mvaddch(y_root + 1, xput, '-');
+					mvaddch(y_root + 1, xput, '=' | COLOR_PAIR(BLOCKED_COLOR));
 					break;
 				// holding lock
 				case (event::LOCK_ACQ):
-					mvaddch(y_root + 1, xput, '=' | A_BOLD);
+					mvaddch(y_root + 1, xput, '=' | COLOR_PAIR(ACQ_COLOR));
 					break;
 				// terminated
 				case (event::THRD_EXIT):
+					mvaddch(y_root + 1, xput, ' ');
 					break;	
 				// normal operation
 				default:
-					mvaddch(y_root + 1, xput, '=');
+					mvaddch(y_root + 1, xput, '=' | COLOR_PAIR(QUIESC_COLOR));
 			}
 		}
+
+		if (select >= 0) attroff(A_BOLD);
 	}
 
 };
 
-int thrd_dat::y_scale = 0;
-int thrd_dat::y_root_assign = 0;
 lktrace::parser* thrd_dat::P = nullptr;
 
 } // namespace lktrace::viz
 
-#define DEFAULT_TICK 1024
+#define DEFAULT_TICK 100000
+const std::pair<size_t, const std::string>
+human_readable_ns(size_t a) { // print a time in ns in human-readable units
+	if (a > pow(10, 9)) 
+		return std::make_pair(a/pow(10, 9), "s");
+	else if (a > pow(10,6))
+		return std::make_pair(a/pow(10, 6), "ms");
+	else if (a > pow(10,3))
+		return std::make_pair(a/pow(10, 3), "us");
+	else
+		return std::make_pair(a, "ns");
+}
 
 int parser::viz() {
-	// set up display
+	// set up ncurses
 	initscr();
 	cbreak();
 	noecho();
@@ -93,42 +126,70 @@ int parser::viz() {
 	getmaxyx(stdscr, ymax, xmax);
 	unsigned tick = DEFAULT_TICK;
 	size_t l_ts = 0;
+	assert(has_colors());
+	start_color();
+	init_pair(QUIESC_COLOR, COLOR_GREEN, COLOR_BLACK);
+	init_pair(BLOCKED_COLOR, COLOR_RED, COLOR_BLACK);
+	init_pair(ACQ_COLOR, COLOR_YELLOW, COLOR_BLACK);
 
-	// set up thread display
+	// set up thread display objects
+	unsigned xsel = 0; // selected tick (maps to coordinate)
+	unsigned ysel = 0; // selected thread (maps to thread index)
 	size_t thrd_count = thrd_hist.size();
 	viz::thrd_dat::P = this;
-	if (ymax % thrd_count) {
-		viz::thrd_dat::y_root_assign = ymax % thrd_count;
-		viz::thrd_dat::y_scale = ymax / thrd_count;
-	} else {
-		viz::thrd_dat::y_root_assign = (ymax-1) % thrd_count;
-		viz::thrd_dat::y_scale = (ymax-1) / thrd_count;
-	}
+	// construct display objects
 	std::vector<viz::thrd_dat> disp_thrds;
 	for (auto& H : thrd_hist) disp_thrds.emplace_back(H);
+	// the top and bottom threads currently displayed (bot_thr points after)
+	size_t top_thr = 0;
+	const unsigned num_slots = (ymax - 1) / 4; // top line is infobox
+	size_t bot_thr = (num_slots > disp_thrds.size()) ? disp_thrds.size() : num_slots;
 
-	// write initial descriptors & timelines
-	for (auto& T : disp_thrds) {
-		mvprintw(T.y_root, 0, "Thread %zx %s:",
-				T.tid, thrd_hooks[T.tid].c_str());
-		T.draw_timeline(l_ts, xmax-1, tick);
-	}
-
-	mvprintw(0, 0, "lt=%llu, tick=%u", l_ts, tick);
-	refresh();
-
+	// main command loop
 	bool quit = false;
 	while (!quit) {
+		// redraw stuff
+		for (size_t i = top_thr; i < bot_thr; ++i) {
+			const int y_root = i*4 + 1;
+			if (i == ysel) disp_thrds[i].draw_timeline(y_root, l_ts, xmax, tick, xsel);
+			else disp_thrds[i].draw_timeline(y_root, l_ts, xmax, tick, -1);
+		}
+		auto tick_h = human_readable_ns(tick);
+		auto lb_h = human_readable_ns(l_ts);
+		mvprintw(0, 0, "lt=%zu %s, tick=%zu %s",
+			lb_h.first, lb_h.second.c_str(), tick_h.first, tick_h.second.c_str());
+		// put cursor on selection
+		move(ysel*4 + 2, xsel);
+		refresh();
+
+		// get command
 		int c = getch();
 		switch(c) {
 		case 'q':
 			quit = true;
 			break;
-		case KEY_LEFT:
-			l_ts = (l_ts > tick) ? l_ts - tick : 0;
+		case KEY_UP:
+			if (ysel > 0) --ysel;
+			if (ysel < top_thr) {
+				--top_thr;
+				--bot_thr;
+			}
+			break;
+		case KEY_DOWN:
+			if (ysel < disp_thrds.size()-1) ++ysel;
+			if (ysel >= bot_thr) {
+				++top_thr;
+				++bot_thr;
+			}
 			break;
 		case KEY_RIGHT:
-			l_ts += tick;
+			if (xsel < xmax-1) ++xsel;
+			else l_ts += tick;
+			break;
+		case KEY_LEFT:
+			if (xsel > 0) --xsel;
+			else if (l_ts > tick) l_ts -= tick;
+			else if (l_ts > 0) l_ts = 0;
 			break;
 		case '=': // zoom in
 			tick /= 2;
@@ -138,9 +199,6 @@ int parser::viz() {
 			break;
 		}
 
-		for (auto& T: disp_thrds) T.draw_timeline(l_ts, xmax-1, tick);
-		mvprintw(0, 0, "lt=%llu, tick=%u", l_ts, tick);
-		refresh();
 	}
 
 	endwin();

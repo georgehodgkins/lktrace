@@ -3,23 +3,25 @@
 #include <fstream>
 #include <getopt.h>
 #include <cassert>
+#include <signal.h>
 #include "enum_ops.h"
 int main (int argc, char** argv) {
 	// initialize params
 	std::string out_fname;
 	size_t min_depth = 0;
 	enum CMD : char {CMD_NONE =0x0, CMD_THREADS = 0x1, CMD_PATTERNS = 0x2,
-		CMD_PATTERNS_TXT = 0x4, CMD_GLOBAL = 0x8};
+		CMD_PATTERNS_TXT = 0x4, CMD_GLOBAL = 0x8, CMD_VIZ = 0x10};
 	CMD the_command = CMD_NONE;
 
 	// setup options
 	enum OPT_ID : int {OPT_OUTFILE = (int) 'o', OPT_DEPTH = (int) 'd',
-		OPT_THREADS, OPT_PATTERNS, OPT_PATTERNS_TXT, OPT_GLOBAL};
+		OPT_THREADS, OPT_PATTERNS, OPT_PATTERNS_TXT, OPT_GLOBAL, OPT_VIZ};
 	const option longopts[] = {
 		{"threads", no_argument, nullptr, OPT_THREADS},
 		{"patterns", no_argument, nullptr, OPT_PATTERNS},
 		{"patterns-text", no_argument, nullptr, OPT_PATTERNS_TXT},
 		{"global", no_argument, nullptr, OPT_GLOBAL},
+		{"viz", no_argument, nullptr, OPT_VIZ},
 		{0, 0, 0, 0}};
 	int opt;
 
@@ -43,6 +45,9 @@ int main (int argc, char** argv) {
 			break;
 		case (OPT_GLOBAL):
 			the_command |= CMD_GLOBAL;
+			break;
+		case (OPT_VIZ):
+			the_command |= CMD_VIZ;
 			break;
 		default:
 			assert(false && "Default block in option parsing reached!");
@@ -74,6 +79,10 @@ int main (int argc, char** argv) {
 
 	// run commands
 	lktrace::parser P (std::string(argv[optind]));
+
+	if (the_command & CMD_VIZ) {
+		return P.viz();
+	}
 	if (the_command & CMD_THREADS) {
 		P.dump_threads(outs);
 	}
