@@ -24,7 +24,7 @@ int main (int argc, char** argv) {
 	int opt;
 
 	// get options
-	while ( (opt = getopt_long(argc, argv, "f:d:", longopts, nullptr)) != -1) {
+	while ( (opt = getopt_long(argc, argv, "+f:d:", longopts, nullptr)) != -1) {
 		switch (opt) {
 		case (OPT_PREFIX):
 			prefix = optarg;
@@ -56,13 +56,27 @@ int main (int argc, char** argv) {
 	sock_ev.data.fd = instance_sock;
 	e = epoll_ctl(sock_poll, EPOLL_CTL_ADD, instance_sock, &sock_ev);
 
-	// set up execution environment for target
+	// set LD_PRELOAD to the tracer .so
+	const char* invoc_lsep = strrchr(argv[0], '/');
+	char* wr_path = NULL;
+	if (invoc_lsep != NULL) { // invoked from another directory
+		// get lktrace directory
+		char* chpath = strndup(argv[0], (size_t) (invoc_lsep - argv[0]));
+		wr_path = getcwd(NULL, 0);
+		assert(wr_path != NULL);
+		e = chdir(chpath);
+		assert(e == 0);
+		free(chpath); // allocated by strndup
+	}
 	char* so_path = realpath("pthread_trace.so", NULL);
 	assert(so_path != NULL);
 	e = setenv("LD_PRELOAD", so_path, 1);
 	assert(e == 0);
+
+	// change to target directory
 	char* target_path = realpath(argv[optind], NULL);
-	assert(target_path != NULL);
+	// use invoked directory if target is not a path (shell command)
+	if (target_path == NULL) target_path = wr_path;
 	char* targ_lsep = strrchr(target_path, '/');
 	assert(targ_lsep != NULL);
 	*targ_lsep = '\0';
@@ -72,12 +86,15 @@ int main (int argc, char** argv) {
 	// set up shm for control data
 	int ctl_fd = shm_open("/lktracectl", O_CREAT | O_EXCL | O_RDWR, S_IWUSR | S_IRUSR);
 	assert(ctl_fd != -1);
-	char* so_lsep = strrchr(so_path, '/');
-	assert(so_lsep != NULL);
-	*so_lsep = '\0';
+	if (wr_path == NULL) {
+		char* so_lsep = strrchr(so_path, '/');
+		assert(so_lsep != NULL);
+		*so_lsep = '\0';
+		wr_path = so_path;
+	}
 	size_t ctl_sz = sizeof(uint32_t) +
 		prefix.size() + 1 +
-		strlen(so_path) + 1 +
+		strlen(wr_path) + 1 +
 		strlen(target_path) + 1;
 	e = ftruncate(ctl_fd, ctl_sz);
 	assert(e == 0);
@@ -92,22 +109,23 @@ int main (int argc, char** argv) {
 	char* str_pt = (char*) num_pt;
 	strcpy(str_pt, prefix.c_str());
 	str_pt += (prefix.size() + 1);
-	strcpy(str_pt, so_path);
-	str_pt += (strlen(so_path) + 1);
+	strcpy(str_pt, wr_path);
+	str_pt += (strlen(wr_path) + 1);
 	strcpy(str_pt, target_path);
 
 	// fork off target executable
 	*targ_lsep = '/'; // fix target path
 	pid_t child = fork();
 	if (child == 0) {
-		execvp(target_path, &argv[optind+1]);
+		execvp(argv[optind], &argv[optind+1]);
 		// TODO: handle launch failure in parent (abort?)
 		perror("exec");
 		assert(false && "Failure to launch target!");
 	}
 
 	free(so_path);
-	free(target_path);
+	if (target_path != wr_path) free(target_path);
+	if (wr_path != so_path) free(wr_path);
 
 	// wait for all tracer instances to terminate
 	// the sockets are never actually used to transmit data,
