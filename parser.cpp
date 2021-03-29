@@ -341,9 +341,10 @@ void parser::find_deps (size_t min_depth) {
 	auto next = global_hist.end();
 	std::u16string pattern;
 	std::u16string callers;
-	// records timestamp of next lock release for a tid
+	// records timestamp of last commit for a tid
 	// used to avoid recording inner patterns multiple times
-	std::unordered_map<size_t, size_t> next_release;
+	// while still properly uninterleaving
+	std::unordered_map<size_t, size_t> last_commit;
 
 	// walk global hist, uninterleaving and finding per-thread patterns
 	for (auto Rit = global_hist.begin(); Rit != global_hist.end(); ++Rit ) {
@@ -354,14 +355,7 @@ void parser::find_deps (size_t min_depth) {
 	switch (L.ev) {
 	
 	case (event::LOCK_ACQ):
-		if (depth == 0) { // not in pattern, start new one
-			assert(!skip_wait_unlock);
-			holder_tid = R.tid;
-			init_time = L.ts;
-			++depth;
-			pattern += (char16_t) L.ev;
-			callers += get_caller_id(L.caller);
-		} else if (R.tid == holder_tid) { // relevant event
+		if (R.tid == holder_tid) { // relevant event
 			if (!skip_wait_unlock) {
 				++depth;
 				pattern += (char16_t) L.ev;
@@ -370,11 +364,22 @@ void parser::find_deps (size_t min_depth) {
 				assert(pattern.back() == (char16_t) event::COND_LEAVE);
 				skip_wait_unlock = false;
 			}
+		} else if (depth == 0) { // not in pattern, start new one
+			// acq does not start a new pattern if it ocurred before
+			// the end of the last pattern in this thread
+			if (L.ts > last_commit[R.tid]) {
+				assert(!skip_wait_unlock);
+				holder_tid = R.tid;
+				init_time = L.ts;
+				++depth;
+				pattern += (char16_t) L.ev;
+				callers += get_caller_id(L.caller);
+			}
 		} else if (next == global_hist.end()) { 
-			// record the next beginning of an interleaved pattern
-			// if it is the outermost in its thread, and one is not already recorded
-			auto f_it = next_release.find(R.tid);
-			if (f_it != next_release.end() && L.ts > f_it->second)
+			// this acq marks the beginning of a new pattern if it occurs
+			// after the end of the last commit for that thread
+			// (or that thread has never committed)
+			if (L.ts > last_commit[R.tid])
 				next = Rit;
 		}
 		break;
@@ -396,8 +401,8 @@ void parser::find_deps (size_t min_depth) {
 				pdat.total_time += (L.ts - init_time);
 			}
 			// do not record any more patterns for this tid
-			// with a timestamp lower than this one
-			next_release[holder_tid] = L.ts;
+			// with a timestamp less than this one
+			last_commit[holder_tid] = L.ts;
 
 			// reset info
 			pattern.clear();
@@ -409,7 +414,7 @@ void parser::find_deps (size_t min_depth) {
 			// if one was noted
 			if (next != global_hist.end()) {
 				Rit = next;
-				--Rit;
+				--Rit; // loop will re-increment
 				next = global_hist.end();
 			}
 
