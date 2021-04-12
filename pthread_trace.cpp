@@ -51,6 +51,24 @@ int pthread_mutex_lock(pthread_mutex_t* lk) {
 	return e;
 }
 
+extern "C" int __pthread_mutex_trylock(pthread_mutex_t*);
+int pthread_mutex_trylock(pthread_mutex_t* lk) {
+	// log arrival at lock 
+	bool local_guard = recurse_guard;
+	if (!local_guard) {
+		recurse_guard = true;
+		the_tracer.add_event(lktrace::event::LOCK_REQ, (size_t) lk);
+	}
+	// run pthreads function
+	int e = __pthread_mutex_trylock(lk);
+	if (!local_guard) {
+		if (e == 0) the_tracer.add_event(lktrace::event::LOCK_ACQ, (size_t) lk);
+		else the_tracer.add_event(lktrace::event::LOCK_ERR, (size_t) lk);
+		recurse_guard = false;
+	}
+	return e;
+}
+
 extern "C" int __pthread_mutex_unlock(pthread_mutex_t*);
 int pthread_mutex_unlock(pthread_mutex_t* lk) {
 	// log lock release
